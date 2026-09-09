@@ -1,0 +1,12 @@
+[
+  {
+    "image": "sample_001.jpg",
+    "query": "Describe this image.",
+    "expected_task": "captioning"
+  },
+  {
+    "image": "sample_001.jpg",
+    "query": "How many buildings are visible?",
+    "expected_task": "vqa"
+  }
+]
