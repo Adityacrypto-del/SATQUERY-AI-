@@ -58,5 +58,14 @@ python scripts/run_pipeline.py --hf-token "$HF_TOKEN" --n-samples 10 --lora-step
 4. A few representative demo images, including at least one GeoTIFF if that
    format is in scope.
 
+## Fine-tuning status
+
+The single-image pipeline is ready for inference, preprocessing, and
+evaluation, but **remote-sensing fine-tuning is still required on this
+branch** before presenting model quality as domain-adapted. Run the LoRA
+preparation/training commands above on the selected RS-instruction or
+BigEarthNet subset, save the adapter under `checkpoints/rs_vlm_lora/`, and
+evaluate the adapted checkpoint against the base model.
+
 See [steps_to_follow.md](steps_to_follow.md) for the original implementation
 requirements and dataset references.
