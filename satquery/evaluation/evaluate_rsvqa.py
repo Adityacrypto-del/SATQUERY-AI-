@@ -14,6 +14,8 @@ import json
 import os
 from pathlib import Path
 
+from PIL import Image
+
 from satquery.models.rs_vlm import RSVLM
 from satquery.models.vqa import answer_vqa
 
@@ -47,7 +49,8 @@ def evaluate(manifest_path: str, out_path: str, n: int, token: str, lora_path: s
         gt_answer = normalize(rec.get("answer", ""))
         q_type = rec.get("type", "unknown")
 
-        pred = answer_vqa(model, rec["image_path"], question)
+        with Image.open(rec["image_path"]) as image:
+            pred = answer_vqa(model, image.convert("RGB"), question, rec["image_path"])
         pred_answer = normalize(pred.get("answer", ""))
 
         is_correct = pred_answer == gt_answer or gt_answer in pred_answer

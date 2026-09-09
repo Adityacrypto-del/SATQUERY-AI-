@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 from PIL import Image
@@ -24,7 +24,7 @@ class LoadedImage:
     height: int
     mode: str
     array: np.ndarray
-    metadata: Dict[str, str]
+    metadata: Dict[str, Any]
 
 
 def validate_single_image(image_path: str) -> Dict[str, object]:
@@ -71,25 +71,29 @@ def load_image(image_path: str) -> LoadedImage:
         if rasterio is None:
             raise RuntimeError("rasterio is required for TIFF/GeoTIFF input")
         with rasterio.open(path) as src:
+            # Keep every source band here.  The model-preprocessing layer is
+            # responsible for selecting an RGB-compatible representation.
+            # Dropping bands while loading makes the decision impossible to
+            # audit and is particularly harmful for Sentinel-2 inputs.
             arr = src.read()
             arr = np.moveaxis(arr, 0, -1)
+            descriptions = list(src.descriptions or ())
+            color_interpretations = [getattr(item, "name", str(item)) for item in src.colorinterp]
             metadata = {
                 "crs": str(src.crs),
                 "transform": str(src.transform),
-                "count": str(src.count),
+                "count": src.count,
+                "band_descriptions": descriptions,
+                "color_interpretations": color_interpretations,
+                "nodata": src.nodata,
             }
-            if arr.shape[-1] >= 3:
-                # RGB-compatible default for Sentinel-style data.
-                arr_rgb = arr[..., :3]
-            else:
-                arr_rgb = np.repeat(arr[..., :1], 3, axis=-1)
             return LoadedImage(
                 path=str(path),
                 extension=ext,
                 width=src.width,
                 height=src.height,
                 mode="TIFF",
-                array=arr_rgb,
+                array=arr,
                 metadata=metadata,
             )
 
@@ -103,5 +107,5 @@ def load_image(image_path: str) -> LoadedImage:
             height=rgb.height,
             mode="RGB",
             array=arr,
-            metadata={},
+            metadata={"color_interpretations": ["red", "green", "blue"]},
         )

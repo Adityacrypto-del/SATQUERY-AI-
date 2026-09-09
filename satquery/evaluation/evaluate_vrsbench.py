@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 
+from PIL import Image
+
 from satquery.models.captioning import generate_caption
 from satquery.models.rs_vlm import RSVLM
 
@@ -70,7 +72,8 @@ def evaluate(manifest_path: str, out_path: str, n: int, lora_path: str = "") -> 
 
     for i, rec in enumerate(records):
         gt_caption = rec["caption"]
-        pred = generate_caption(model, rec["image_path"])
+        with Image.open(rec["image_path"]) as image:
+            pred = generate_caption(model, image.convert("RGB"), rec["image_path"])
         pred_caption = pred.get("caption", "")
 
         predictions.append(pred_caption)
