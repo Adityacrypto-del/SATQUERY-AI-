@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# ML checkpoints
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# Datasets
+data/
+# Datasets
+data/
+*.tif
+*.tiff
+
+# Ignore downloaded dataset contents
+
+*.tif
+*.tiff
+
+# Model directories
+vicuna-7b-v1.5/
+checkpoints/
+outputs/
+runs/
+
+# macOS
+.DS_Store

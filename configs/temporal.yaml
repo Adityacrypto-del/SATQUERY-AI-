@@ -1,0 +1,44 @@
+# SatQuery AI - Bi-Temporal Analysis Configuration
+
+temporal:
+
+  model:
+    name: DeltaVLM
+    type: bi_temporal_vlm
+
+    # Model weights are stored outside the SATQUERY repository.
+    checkpoint: external
+
+  development:
+    datasets:
+      - ChangeChat-105k
+      - LEVIR-CC
+
+  evaluation:
+    datasets:
+      - CDVQA
+
+  tasks:
+    - change_captioning
+    - change_vqa
+    - change_classification
+    - change_quantification
+    - change_localization
+
+  input:
+    required_images: 2
+    relationship: spatially_corresponding
+
+    geospatial_formats:
+      - GeoTIFF
+      - TIFF
+
+    benchmark_formats:
+      - PNG
+      - JPEG
+
+  output:
+    structured_evidence: true
+    confidence: true
+    visual_evidence: true
+    execution_trace: true
