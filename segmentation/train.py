@@ -37,6 +37,7 @@ from segmentation.dataset import (
     assert_split_disjoint,
     cdvqa_split_scenes,
 )
+from segmentation.validate_cdvqa import CDVQAValidator, format_validation
 from tools.change_analysis.cdvqa import N_CLASSES
 
 __all__ = ["SiameseChangeNet", "TrainConfig", "run_pilot", "train"]
@@ -207,7 +208,7 @@ def _build_loaders(config: TrainConfig, pilot: bool = False):
         val_set, batch_size=config.batch_size, shuffle=False,
         num_workers=config.workers, pin_memory=True,
     )
-    return train_loader, val_loader, len(train_scenes), len(val_scenes)
+    return train_loader, val_loader, train_scenes, val_scenes
 
 
 def _criterion(config: TrainConfig, device) -> nn.Module:
@@ -254,7 +255,7 @@ def run_pilot(config: TrainConfig, steps: int = 50) -> Dict[str, object]:
     if device.type != "cuda":
         raise RuntimeError("pilot requires CUDA; no GPU is visible to torch")
 
-    train_loader, _, n_train_full, _ = _build_loaders(config, pilot=True)
+    train_loader, _, _, _ = _build_loaders(config, pilot=True)
     full_train_scenes = len(cdvqa_split_scenes(config.cdvqa_root, "Train"))
 
     model = SiameseChangeNet().to(device)
@@ -316,10 +317,24 @@ def run_pilot(config: TrainConfig, steps: int = 50) -> Dict[str, object]:
 
 
 def train(config: TrainConfig) -> Dict[str, object]:
-    """Full training run. Selects checkpoints on Val; never reads Test."""
+    """Full training run.
+
+    Checkpoints are selected on CDVQA Val **average accuracy** -- the actual
+    objective -- not on mIoU, which is a proxy for it. mIoU is logged as a
+    diagnostic so the correlation between segmentation quality and answer
+    accuracy is measurable rather than assumed.
+
+    Test is never read here.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader, val_loader, n_train, n_val = _build_loaders(config)
+    train_loader, val_loader, train_scenes, val_scenes = _build_loaders(config)
     os.makedirs(config.out_dir, exist_ok=True)
+
+    # The validator walks val_scenes in the same order the loader yields them,
+    # so the loader must not shuffle.
+    validator = CDVQAValidator(
+        config.cdvqa_root, config.second_root, "Val", scenes=val_scenes
+    )
 
     model = SiameseChangeNet().to(device)
     optimiser = torch.optim.AdamW(
@@ -331,7 +346,7 @@ def train(config: TrainConfig) -> Dict[str, object]:
     scaler = torch.amp.GradScaler("cuda", enabled=config.amp)
     criterion = _criterion(config, device)
 
-    best = {"miou": -1.0, "epoch": -1}
+    best = {"average_accuracy": -1.0, "epoch": -1}
     history = []
     for epoch in range(config.epochs):
         model.train()
@@ -350,32 +365,51 @@ def train(config: TrainConfig) -> Dict[str, object]:
             scheduler.step()
             running += loss.item()
 
-        metrics = evaluate(model, val_loader, device, config.amp)
+        train_loss = running / max(len(train_loader), 1)
+        report = validator.run(model, val_loader, device, config.amp)
         entry = {
             "epoch": epoch,
-            "train_loss": running / max(len(train_loader), 1),
-            "val_miou": metrics["miou"],
-            "val_pixel_accuracy": metrics["pixel_accuracy"],
+            "train_loss": train_loss,
+            "val_average_accuracy": report["average_accuracy"],
+            "val_overall_accuracy": report["overall_accuracy"],
+            "val_miou": report["miou"],
+            "val_pixel_accuracy": report["pixel_accuracy"],
+            "head_disagreement": report["head_disagreement"],
+            "unanswered": report["unanswered_total"],
+            "per_class_iou": report["per_class_iou"],
         }
         history.append(entry)
         print(
-            f"epoch {epoch:3d}  loss {entry['train_loss']:.4f}  "
-            f"val mIoU {metrics['miou']:.4f}  "
-            f"val pixel acc {metrics['pixel_accuracy']:.4f}",
+            f"epoch {epoch:3d}  loss {train_loss:.4f}  "
+            f"val AA {report['average_accuracy'] * 100:6.2f}%  "
+            f"OA {report['overall_accuracy'] * 100:6.2f}%  "
+            f"mIoU {report['miou'] * 100:5.2f}%  "
+            f"head-disagree {report['head_disagreement'] * 100:.3f}%",
             flush=True,
         )
 
-        if metrics["miou"] > best["miou"]:
-            best = {"miou": metrics["miou"], "epoch": epoch}
+        if report["average_accuracy"] > best["average_accuracy"]:
+            best = {
+                "average_accuracy": report["average_accuracy"],
+                "overall_accuracy": report["overall_accuracy"],
+                "miou": report["miou"],
+                "epoch": epoch,
+            }
             torch.save(
                 {"model": model.state_dict(), "config": asdict(config),
-                 "epoch": epoch, "val_miou": metrics["miou"]},
+                 "epoch": epoch, "val_report": report},
                 os.path.join(config.out_dir, "best.pt"),
             )
+            with open(os.path.join(config.out_dir, "best_val_report.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2)
 
+    print()
+    print(format_validation(report))
     with open(os.path.join(config.out_dir, "history.json"), "w", encoding="utf-8") as f:
-        json.dump({"history": history, "best": best, "n_train": n_train,
-                   "n_val": n_val}, f, indent=2)
+        json.dump({"history": history, "best": best,
+                   "n_train": len(train_scenes), "n_val": len(val_scenes)},
+                  f, indent=2)
     return {"best": best, "history": history}
 
 
