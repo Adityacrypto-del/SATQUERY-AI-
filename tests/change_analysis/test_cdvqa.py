@@ -1,7 +1,8 @@
-"""Tests for the CDVQA rule implementation (oracle).
+"""Tests for the CDVQA rule implementation.
 
 These lock in rules that were fitted empirically against gold answers rather
-than assumed, so a regression here would silently move the ceiling.
+than assumed, so a regression here would silently move the ceiling measured
+by eval/oracle_cdvqa.py, which imports this same implementation.
 """
 
 from __future__ import annotations
@@ -10,11 +11,10 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from eval.oracle_cdvqa import (
+from tools.change_analysis.cdvqa import (
     PALETTE,
+    answer_question,
     decode_label,
-    oracle_answer,
-    parse_question,
     question_side,
     ratio_bin,
 )
@@ -33,7 +33,7 @@ def _maps(pairs, size=10):
 
 
 def _answer(qtype, question, s1, s2):
-    return oracle_answer(qtype, parse_question(question, qtype), s1, s2)
+    return answer_question(question, qtype, s1, s2).answer
 
 
 # --------------------------------------------------------------------------

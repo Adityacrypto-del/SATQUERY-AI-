@@ -21,227 +21,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
-from PIL import Image
+from typing import Any, Dict, List, Optional
 
 from eval.run_cdvqa import QUESTION_TYPES, load_cdvqa_split
-
-__all__ = [
-    "CLASS_NAMES",
-    "PALETTE",
-    "decode_label",
-    "oracle_answer",
-    "parse_question",
-    "ratio_bin",
-]
-
-# SECOND's 7-colour palette. Class 0 is "unchanged"; 1..6 are land-cover
-# classes carried only by changed pixels. The colour->name binding is the
-# standard SECOND convention; the oracle test is what confirms it, since a
-# wrong binding collapses accuracy on every class-based question type.
-PALETTE: Dict[Tuple[int, int, int], int] = {
-    (255, 255, 255): 0,  # unchanged
-    (128, 128, 128): 1,  # non-vegetated ground surface
-    (0, 128, 0): 2,      # low vegetation
-    (0, 255, 0): 3,      # trees
-    (128, 0, 0): 4,      # buildings
-    (0, 0, 255): 5,      # water
-    (255, 0, 0): 6,      # playgrounds
-}
-
-CLASS_NAMES: Dict[int, str] = {
-    1: "NVG_surface",
-    2: "low_vegetation",
-    3: "trees",
-    4: "buildings",
-    5: "water",
-    6: "playgrounds",
-}
-
-NAME_TO_CLASS = {name: index for index, name in CLASS_NAMES.items()}
-
-# Phrases used in question text for each land-cover class. Longest first so
-# "low vegetation" is not shadowed by a shorter alternative.
-_CLASS_PHRASES: List[Tuple[str, str]] = [
-    ("non-vegetated ground surface", "NVG_surface"),
-    ("non vegetated ground surface", "NVG_surface"),
-    ("low vegetation", "low_vegetation"),
-    ("playgrounds", "playgrounds"),
-    ("playground", "playgrounds"),
-    ("buildings", "buildings"),
-    ("building", "buildings"),
-    ("trees", "trees"),
-    ("tree", "trees"),
-    ("water", "water"),
-]
-
-# "unchanged" / "non-change" phrasings invert the change_ratio answer.
-_NON_CHANGE = re.compile(
-    r"non-change|non change|nonchange|unchanged|not changed|has not changed"
+from tools.change_analysis.cdvqa import (
+    CLASS_NAMES,
+    PALETTE,
+    answer_question,
+    decode_label,
+    parse_question,
+    question_side,
+    ratio_bin,
 )
 
-_POST = re.compile(r"post-event|post event|post-change|post change|second image")
-_PRE = re.compile(r"pre-event|pre event|pre-change|pre change|first image")
-
-
-def question_side(text: str) -> str:
-    """Which temporal map a question refers to: "pre", "post", or "none".
-
-    Determined empirically against gold answers, not assumed. Roughly a third
-    of change_or_not / largest_change / smallest_change questions name no
-    image at all, and those are answered over the union of both maps. Getting
-    this wrong costs ~15-20 points on largest/smallest and ~3 on
-    change_or_not, so it is the single highest-leverage detail in the rules.
-    """
-    lowered = text.lower()
-    if _POST.search(lowered):
-        return "post"
-    if _PRE.search(lowered):
-        return "pre"
-    return "none"
-
-
-def decode_label(path: str) -> np.ndarray:
-    """Decode a SECOND RGB label PNG into an ``(H, W)`` class-index map.
-
-    Raises on any colour outside the palette: an unmapped colour would
-    silently become a wrong class and corrupt every area count downstream.
-    """
-    rgb = np.array(Image.open(path).convert("RGB"))
-    out = np.full(rgb.shape[:2], 255, dtype=np.uint8)
-    for colour, index in PALETTE.items():
-        out[np.all(rgb == np.array(colour, dtype=np.uint8), axis=-1)] = index
-    if (out == 255).any():
-        bad = np.unique(rgb[out == 255].reshape(-1, 3), axis=0)[:5]
-        raise ValueError(
-            f"{path!r} contains colours outside the SECOND palette: "
-            f"{[tuple(int(v) for v in c) for c in bad]}"
-        )
-    return out
-
-
-def ratio_bin(percent: float) -> str:
-    """Quantise a percentage into CDVQA's 11 bins.
-
-    Exactly zero is its own answer ("0"); everything else falls in a
-    half-open decade (0, 10] -> "0_to_10", (90, 100] -> "90_to_100".
-    """
-    if percent <= 0:
-        return "0"
-    for low in range(0, 100, 10):
-        if percent <= low + 10:
-            return f"{low}_to_{low + 10}"
-    return "90_to_100"
-
-
-def parse_question(text: str, question_type: str) -> Dict[str, Any]:
-    """Extract the target class and any polarity from a question."""
-    lowered = text.lower()
-    target: Optional[str] = None
-    for phrase, name in _CLASS_PHRASES:
-        if phrase in lowered:
-            target = name
-            break
-    side = question_side(text)
-    return {
-        "target": target,
-        "non_change": bool(_NON_CHANGE.search(lowered)),
-        "side": side,
-        "post": side == "post",
-    }
-
-
-def _areas(s1: np.ndarray, s2: np.ndarray) -> Tuple[Dict[int, int], Dict[int, int]]:
-    a1 = {c: int((s1 == c).sum()) for c in CLASS_NAMES}
-    a2 = {c: int((s2 == c).sum()) for c in CLASS_NAMES}
-    return a1, a2
-
-
-def oracle_answer(
-    question_type: str,
-    parsed: Dict[str, Any],
-    s1: np.ndarray,
-    s2: np.ndarray,
-    ratio_denominator: str = "total",
-) -> Optional[str]:
-    """Apply the CDVQA rule for ``question_type`` to ground-truth maps."""
-    a1, a2 = _areas(s1, s2)
-    total = int(s1.size)
-    changed = int((s1 != 0).sum())
-    target = parsed["target"]
-    cls = NAME_TO_CLASS.get(target) if target else None
-
-    side = parsed.get("side", "none")
-
-    if question_type == "change_or_not":
-        if cls is None:
-            return None
-        if side == "post":
-            present = a2[cls] > 0
-        elif side == "pre":
-            present = a1[cls] > 0
-        else:
-            present = a1[cls] > 0 or a2[cls] > 0
-        return "yes" if present else "no"
-
-    if question_type == "increase_or_not":
-        if cls is None:
-            return None
-        return "yes" if a2[cls] > a1[cls] else "no"
-
-    if question_type == "decrease_or_not":
-        if cls is None:
-            return None
-        return "yes" if a2[cls] < a1[cls] else "no"
-
-    if question_type in ("largest_change", "smallest_change"):
-        if side == "post":
-            totals = {c: a2[c] for c in CLASS_NAMES}
-        elif side == "pre":
-            totals = {c: a1[c] for c in CLASS_NAMES}
-        else:
-            totals = {c: a1[c] + a2[c] for c in CLASS_NAMES}
-        # Absent classes are not candidates: a class with no changed pixels
-        # did not undergo the smallest change, it underwent none.
-        present = {c: v for c, v in totals.items() if v > 0}
-        if not present:
-            return None
-        pick = max if question_type == "largest_change" else min
-        best = pick(present, key=lambda c: present[c])
-        return CLASS_NAMES[best]
-
-    if question_type == "change_to_what":
-        if cls is None:
-            return None
-        mask = s1 == cls
-        if not mask.any():
-            return None
-        values = s2[mask]
-        values = values[values != 0]
-        if values.size == 0:
-            return None
-        return CLASS_NAMES[int(Counter(values.tolist()).most_common(1)[0][0])]
-
-    if question_type == "change_ratio":
-        percent = 100.0 * changed / total
-        if parsed["non_change"]:
-            percent = 100.0 - percent
-        return ratio_bin(percent)
-
-    if question_type == "change_ratio_types":
-        if cls is None:
-            return None
-        area = a2[cls] if parsed["post"] else a1[cls]
-        denominator = changed if ratio_denominator == "changed" else total
-        if denominator == 0:
-            return "0"
-        return ratio_bin(100.0 * area / denominator)
-
-    return None
+__all__ = ["format_oracle", "run_oracle"]
 
 
 def run_oracle(
@@ -249,7 +43,6 @@ def run_oracle(
     second_root: str,
     split: str = "Train",
     limit: Optional[int] = None,
-    ratio_denominator: str = "total",
 ) -> Dict[str, Any]:
     """Score the rule implementation against gold answers on ground truth."""
     samples = load_cdvqa_split(cdvqa_root, split)
@@ -273,10 +66,10 @@ def run_oracle(
         for sample in by_scene[scene]:
             question_type = sample.question_type
             totals[question_type] = totals.get(question_type, 0) + 1
-            parsed = parse_question(sample.question, question_type)
-            predicted = oracle_answer(
-                question_type, parsed, s1, s2, ratio_denominator
+            result = answer_question(
+                sample.question, question_type, s1, s2
             )
+            predicted = result.answer
             if predicted is None:
                 unparsed[question_type] = unparsed.get(question_type, 0) + 1
                 continue
@@ -340,15 +133,11 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--split", default="Train")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument(
-        "--ratio-denominator", choices=("total", "changed"), default="total"
-    )
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
 
     report = run_oracle(
-        args.cdvqa_root, args.second_root, args.split, args.limit,
-        args.ratio_denominator,
+        args.cdvqa_root, args.second_root, args.split, args.limit
     )
     print(format_oracle(report))
     if args.out:
