@@ -1,361 +1,240 @@
-import React, { useState, useRef, useEffect } from 'react';
-import VignetteBloomCanvas, { DEFAULT_VIGNETTE_PARAMS } from '../components/VignetteBloomCanvas';
+import React, { useState } from 'react';
+import GlobeStudy from '../components/ui/globe-study';
 import {
-  Sparkles, MessageSquare, ArrowRight, Sliders, Layers,
-  Zap, Cpu, Image as ImageIcon, ChevronDown, ChevronUp, RotateCcw
+  MessageSquare, ArrowRight, Sparkles, Satellite,
+  Layers, Zap, Cpu, MousePointer2, Orbit,
 } from 'lucide-react';
 
-const DEMO_IMAGES = [
-  { name: 'Ref-008 (Default)', url: '/ascii-editor/demos/generated/ref-008.webp' },
-  { name: 'Rotterdam Harbor',  url: 'https://images.unsplash.com/photo-1578575437130-527eed3abbec?w=1200&q=80' },
-  { name: 'Pivot Cropland',    url: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=1200&q=80' },
-  { name: 'Great Barrier Reef', url: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1200&q=80' },
-  { name: 'City Aerial',        url: 'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=1200&q=80' },
+const FEATURES = [
+  {
+    icon: Cpu,
+    color: 'sky',
+    title: 'Qwen2-VL 7B Vision',
+    body: 'Variable-resolution dynamic patching with 4-bit LoRA quantization for rapid local inference.',
+  },
+  {
+    icon: Layers,
+    color: 'indigo',
+    title: 'GeoTIFF Multispectral',
+    body: 'Preserves CRS metadata and constructs balanced RGB from multispectral band stacks.',
+  },
+  {
+    icon: Zap,
+    color: 'cyan',
+    title: 'Deterministic VQA Router',
+    body: 'Automatically classifies queries into captioning vs VQA pipelines before inference.',
+  },
 ];
-
-const RENDER_MODES = [
-  'mosaic', 'characters', 'matrix', 'hexagons', 'dither',
-  'dots', 'triangles', 'lego', 'hatch', 'diagonal', 'disco',
-  'contour', 'halfblocks', 'rings', 'stars', 'hearts', 'cross',
-  'braille', 'hexdump', 'voxel', 'pixel', 'diamond', 'mixed', 'lines', 'bubbles',
-];
-
-const ANIM_STYLES = ['wave', 'pulse', 'shimmer', 'ripple', 'flicker'];
 
 export default function LandingPage({ onNavigateToChat }) {
-  const containerRef = useRef(null);
-  const [canvasW, setCanvasW] = useState(900);
-  const [canvasH] = useState(520);
-
-  const [cfg, setCfg] = useState(DEFAULT_VIGNETTE_PARAMS);
-  const [selectedImage, setSelectedImage] = useState(DEMO_IMAGES[0].url);
-  const [showPanel, setShowPanel] = useState(true);
-  const [panelTab, setPanelTab] = useState('render');
-
-  // Responsive canvas width
-  useEffect(() => {
-    const obs = new ResizeObserver(entries => {
-      for (const e of entries) {
-        const avail = showPanel
-          ? Math.floor(e.contentRect.width * 0.635)
-          : e.contentRect.width - 32;
-        setCanvasW(Math.max(320, avail));
-      }
-    });
-    if (containerRef.current) obs.observe(containerRef.current);
-    return () => obs.disconnect();
-  }, [showPanel]);
-
-  const set = (patch) => setCfg(prev => ({ ...prev, ...patch }));
-  const setPfx = (key, patch) =>
-    setCfg(prev => ({ ...prev, pfx: { ...prev.pfx, [key]: { ...prev.pfx[key], ...patch } } }));
-
-  const resetCfg = () => setCfg(DEFAULT_VIGNETTE_PARAMS);
-
-  const Slider = ({ label, value, min, max, step = 1, onChange }) => (
-    <div className="mb-3">
-      <div className="flex justify-between text-[11px] text-slate-300 mb-1">
-        <span>{label}</span>
-        <span className="font-mono text-sky-400 tabular-nums">{value}</span>
-      </div>
-      <input type="range" min={min} max={max} step={step} value={value}
-        onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-1.5 rounded-full accent-sky-400 cursor-pointer bg-slate-800" />
-    </div>
-  );
-
-  const Toggle = ({ label, checked, onChange }) => (
-    <button onClick={() => onChange(!checked)}
-      className={`flex items-center justify-between w-full px-3 py-2 rounded-xl text-xs mb-1 transition-all border ${
-        checked ? 'bg-sky-500/20 border-sky-400/40 text-sky-200' : 'bg-slate-950 border-slate-800 text-slate-400'
-      }`}>
-      <span>{label}</span>
-      <div className={`w-8 h-4 rounded-full relative transition-colors ${checked ? 'bg-sky-500' : 'bg-slate-700'}`}>
-        <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${checked ? 'left-4' : 'left-0.5'}`} />
-      </div>
-    </button>
-  );
+  const [globeHue, setGlobeHue] = useState(200);
 
   return (
-    <div className="relative min-h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans selection:bg-sky-500 selection:text-white">
+    <div className="relative min-h-screen bg-[#08090a] text-white overflow-hidden font-sans selection:bg-sky-500 selection:text-white">
 
-      {/* Ambient background orbs */}
-      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[900px] h-[600px] bg-sky-500/8 rounded-full blur-[160px]" />
-        <div className="absolute bottom-0 right-0 w-[600px] h-[500px] bg-indigo-600/7 rounded-full blur-[140px]" />
-      </div>
+      {/* ── Full-viewport Globe Hero ───────────────────────────────────── */}
+      <div className="relative w-full" style={{ height: '100vh', minHeight: 600 }}>
 
-      <div className="relative z-10 max-w-[1400px] mx-auto px-4 lg:px-8 pt-10 pb-20">
+        {/* Globe fills the entire viewport */}
+        <div className="absolute inset-0 z-0">
+          <GlobeStudy
+            mode="dark"
+            scale={1}
+            opacity={1}
+            hue={globeHue - 200}
+            saturation={1.15}
+            brightness={1}
+          />
+        </div>
 
-        {/* ── Hero Header ────────────────────────────────────────────────── */}
-        <div className="text-center max-w-3xl mx-auto mb-10">
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-sky-500/10 border border-sky-500/25 text-sky-300 text-xs font-semibold mb-5 shadow-lg shadow-sky-500/10 backdrop-blur-sm">
-            <Sparkles className="w-3.5 h-3.5 animate-pulse" />
-            <span>21st.dev Vignette Bloom · Canvas2D · ayushFRONTEND branch</span>
+        {/* Gradient fade to dark at the bottom so content section blends in */}
+        <div className="absolute bottom-0 left-0 right-0 h-64 pointer-events-none z-10"
+          style={{ background: 'linear-gradient(to bottom, transparent, #08090a)' }} />
+
+        {/* Radial glow behind text */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <div className="w-[700px] h-[500px] rounded-full"
+            style={{ background: 'radial-gradient(ellipse at center, rgba(56,189,248,0.06) 0%, transparent 70%)' }} />
+        </div>
+
+        {/* ── Hero Overlay Text ─────────────────────────────────────────── */}
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center px-4 text-center pointer-events-none">
+
+          {/* Branch badge */}
+          <div className="pointer-events-auto inline-flex items-center gap-2 px-4 py-1.5 rounded-full mb-8
+            bg-white/5 border border-white/10 text-white/60 text-xs font-semibold tracking-widest uppercase
+            backdrop-blur-md shadow-lg"
+          >
+            <Orbit className="w-3.5 h-3.5 text-sky-400 animate-spin" style={{ animationDuration: '12s' }} />
+            <span>SatQuery AI · ayushFRONTEND · Branch</span>
           </div>
 
-          <h1 className="text-5xl sm:text-6xl font-extrabold tracking-tight leading-tight mb-5">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-cyan-200 to-white">
-              SatQuery&nbsp;AI
-            </span>
+          {/* Title */}
+          <h1 className="text-5xl sm:text-7xl font-extrabold tracking-tight leading-none mb-6"
+            style={{
+              background: 'linear-gradient(135deg, #e2e4e9 0%, #a0c8ff 45%, #ffffff 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+              textShadow: 'none',
+            }}
+          >
+            Geospatial&nbsp;AI
             <br />
-            <span className="text-slate-300 text-3xl sm:text-4xl font-bold">
-              Advanced Geospatial Intelligence
+            <span style={{
+              background: 'linear-gradient(135deg, #38bdf8 0%, #818cf8 60%, #22d3ee 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+            }}>
+              Intelligence
             </span>
           </h1>
 
-          <p className="text-base text-slate-400 leading-relaxed mb-8 max-w-2xl mx-auto">
-            Real-time ASCII raster art engine over satellite imagery — powered by
-            Canvas2D, Qwen2-VL-7B, and deterministic VQA routing.
+          {/* Sub-copy */}
+          <p className="text-base sm:text-lg text-white/45 max-w-xl leading-relaxed mb-10 font-light">
+            Upload satellite imagery. Ask natural-language questions.
+            Get structured scene analysis, land-cover breakdowns, and geo-metadata — instantly.
           </p>
 
-          <div className="flex flex-wrap items-center justify-center gap-3">
-            <button onClick={onNavigateToChat}
-              className="group inline-flex items-center gap-3 px-8 py-4 rounded-2xl bg-gradient-to-r from-sky-500 via-indigo-600 to-cyan-500 text-white font-bold text-sm shadow-xl shadow-sky-500/25 hover:shadow-sky-500/45 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200">
+          {/* CTAs */}
+          <div className="pointer-events-auto flex flex-col sm:flex-row items-center gap-3">
+            <button
+              onClick={onNavigateToChat}
+              className="group relative inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold text-sm text-white
+                shadow-2xl hover:scale-[1.03] active:scale-[0.98] transition-all duration-200"
+              style={{
+                background: 'linear-gradient(135deg, #0ea5e9, #6366f1, #06b6d4)',
+                boxShadow: '0 0 40px rgba(56,189,248,0.25), 0 4px 24px rgba(0,0,0,0.4)',
+              }}
+            >
               <MessageSquare className="w-5 h-5 group-hover:rotate-12 transition-transform" />
               Launch AI Satellite Chatbot
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </button>
-            <button onClick={() => setShowPanel(v => !v)}
-              className="inline-flex items-center gap-2 px-6 py-4 rounded-2xl bg-slate-900 border border-slate-800 hover:border-sky-500/40 text-slate-200 hover:text-sky-300 font-semibold text-sm transition-all">
-              <Sliders className="w-4 h-4 text-sky-400" />
-              {showPanel ? 'Hide' : 'Show'} Controls
-              {showPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
-            <button onClick={resetCfg}
-              className="inline-flex items-center gap-2 px-4 py-4 rounded-2xl bg-slate-900 border border-slate-800 hover:border-rose-500/30 text-slate-400 hover:text-rose-300 transition-all">
-              <RotateCcw className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
 
-        {/* ── Main Canvas + Controls ────────────────────────────────────── */}
-        <div ref={containerRef} className="relative rounded-3xl p-[2px] bg-gradient-to-b from-sky-500/25 via-indigo-500/15 to-slate-900 border border-sky-500/25 shadow-2xl shadow-sky-500/10">
-          <div className="rounded-[22px] bg-slate-900/80 backdrop-blur-2xl overflow-hidden">
-            <div className={`flex flex-col lg:flex-row ${showPanel ? '' : ''}`}>
-
-              {/* Canvas view */}
-              <div className={`${showPanel ? 'lg:w-[63%]' : 'w-full'} relative transition-all duration-300`}>
-                <VignetteBloomCanvas
-                  config={cfg}
-                  imageSrc={selectedImage}
-                  width={canvasW}
-                  height={canvasH}
-                  className="w-full border-b lg:border-b-0 lg:border-r border-slate-800/60 !rounded-none"
-                />
-
-                {/* Info overlay */}
-                <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-950/85 border border-sky-500/25 text-[11px] font-mono text-sky-300 backdrop-blur-md shadow-lg pointer-events-none">
-                  <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-                  <span>{cfg.renderMode.toUpperCase()}</span>
-                  <span className="opacity-50">|</span>
-                  <span className="text-indigo-300">{cfg.animStyle}</span>
-                  <span className="opacity-50">|</span>
-                  <span className="text-emerald-300">{cfg.cellSize}px</span>
-                </div>
-              </div>
-
-              {/* Controls Panel */}
-              {showPanel && (
-                <div className="lg:w-[37%] flex flex-col bg-slate-950/60 border-t lg:border-t-0 border-slate-800/60">
-
-                  {/* Tab bar */}
-                  <div className="flex border-b border-slate-800/60">
-                    {[
-                      { id: 'render', label: 'Render' },
-                      { id: 'color',  label: 'Color' },
-                      { id: 'pfx',    label: 'Post-FX' },
-                      { id: 'anim',   label: 'Anim' },
-                    ].map(t => (
-                      <button key={t.id} onClick={() => setPanelTab(t.id)}
-                        className={`flex-1 py-3 text-xs font-semibold transition-all border-b-2 ${
-                          panelTab === t.id
-                            ? 'text-sky-300 border-sky-400 bg-sky-500/5'
-                            : 'text-slate-400 border-transparent hover:text-slate-200'
-                        }`}>
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-4">
-
-                    {/* ── Render Tab ── */}
-                    {panelTab === 'render' && (<>
-                      {/* Image source */}
-                      <div>
-                        <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
-                          Source Photo
-                        </label>
-                        <select value={selectedImage} onChange={e => setSelectedImage(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500">
-                          {DEMO_IMAGES.map(img => (
-                            <option key={img.url} value={img.url}>{img.name}</option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Render mode grid */}
-                      <div>
-                        <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
-                          Render Mode
-                        </label>
-                        <div className="grid grid-cols-4 gap-1">
-                          {RENDER_MODES.map(m => (
-                            <button key={m} onClick={() => set({ renderMode: m })}
-                              className={`px-1 py-1.5 rounded-lg text-[10px] font-mono transition-all truncate ${
-                                cfg.renderMode === m
-                                  ? 'bg-sky-500 text-white font-bold shadow-md shadow-sky-500/25'
-                                  : 'bg-slate-900 text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-                              }`}>
-                              {m}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Background mode */}
-                      <div>
-                        <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
-                          Background Mode
-                        </label>
-                        <div className="grid grid-cols-4 gap-1">
-                          {['solid', 'blurred', 'photo', 'none'].map(m => (
-                            <button key={m} onClick={() => set({ bgMode: m })}
-                              className={`py-1.5 rounded-lg text-[10px] font-mono transition-all ${
-                                cfg.bgMode === m
-                                  ? 'bg-indigo-600 text-white font-bold'
-                                  : 'bg-slate-900 text-slate-400 hover:text-slate-100'
-                              }`}>
-                              {m}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <Slider label="Cell Size (px)" value={cfg.cellSize} min={4} max={32} step={2} onChange={v => set({ cellSize: v })} />
-                      <Slider label="Coverage (%)" value={cfg.coverage} min={10} max={100} onChange={v => set({ coverage: v })} />
-                      <Slider label="Edge Emphasis" value={cfg.edgeEmphasis} min={0} max={100} onChange={v => set({ edgeEmphasis: v })} />
-                      <Toggle label="Invert Luminance" checked={cfg.invert} onChange={v => set({ invert: v })} />
-                    </>)}
-
-                    {/* ── Color Tab ── */}
-                    {panelTab === 'color' && (<>
-                      <Slider label="Brightness" value={cfg.brightness} min={-50} max={100} onChange={v => set({ brightness: v })} />
-                      <Slider label="Contrast (%)" value={cfg.contrast} min={50} max={200} onChange={v => set({ contrast: v })} />
-                      <Slider label="Saturation (%)" value={cfg.saturation} min={0} max={200} onChange={v => set({ saturation: v })} />
-                      <Slider label="Grayscale (%)" value={cfg.grayscale} min={0} max={100} onChange={v => set({ grayscale: v })} />
-                      <div className="mb-3">
-                        <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                          Tint Color
-                        </label>
-                        <div className="flex items-center gap-3">
-                          <input type="color" value={cfg.tint}
-                            onChange={e => set({ tint: e.target.value })}
-                            className="w-10 h-8 rounded-lg cursor-pointer border-0 bg-transparent" />
-                          <span className="font-mono text-xs text-slate-400">{cfg.tint}</span>
-                        </div>
-                      </div>
-                      <Slider label="Tint Opacity (%)" value={cfg.tintOpacity} min={0} max={100} onChange={v => set({ tintOpacity: v })} />
-                    </>)}
-
-                    {/* ── Post-FX Tab ── */}
-                    {panelTab === 'pfx' && (
-                      <div className="space-y-1">
-                        {Object.entries(cfg.pfx).map(([key, fx]) => (
-                          <div key={key} className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
-                            <Toggle
-                              label={key.charAt(0).toUpperCase() + key.slice(1)}
-                              checked={fx.enabled}
-                              onChange={v => setPfx(key, { enabled: v })}
-                            />
-                            {fx.enabled && (
-                              <div className="mt-2">
-                                <Slider label="Intensity" value={fx.intensity} min={0} max={100}
-                                  onChange={v => setPfx(key, { intensity: v })} />
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* ── Anim Tab ── */}
-                    {panelTab === 'anim' && (<>
-                      <Toggle label="Animated" checked={cfg.animated} onChange={v => set({ animated: v })} />
-                      {cfg.animated && (<>
-                        <div className="mt-3">
-                          <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
-                            Animation Style
-                          </label>
-                          <div className="grid grid-cols-3 gap-1.5">
-                            {ANIM_STYLES.map(s => (
-                              <button key={s} onClick={() => set({ animStyle: s })}
-                                className={`py-2 rounded-xl text-xs font-mono font-semibold transition-all ${
-                                  cfg.animStyle === s
-                                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20'
-                                    : 'bg-slate-900 text-slate-400 hover:text-white'
-                                }`}>
-                                {s}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <Slider label="Speed" value={cfg.animSpeed.intensity} min={10} max={200}
-                          onChange={v => setCfg(p => ({ ...p, animSpeed: { ...p.animSpeed, intensity: v } }))} />
-                        <Slider label="Intensity" value={cfg.animIntensity.intensity} min={0} max={100}
-                          onChange={v => setCfg(p => ({ ...p, animIntensity: { ...p.animIntensity, intensity: v } }))} />
-                      </>)}
-                    </>)}
-
-                  </div>
-
-                  {/* Bottom CTA */}
-                  <div className="p-4 border-t border-slate-800/60">
-                    <button onClick={onNavigateToChat}
-                      className="w-full py-2.5 rounded-xl bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 border border-sky-400/30 text-sky-300 font-semibold text-xs flex items-center justify-center gap-2 transition-all">
-                      <MessageSquare className="w-4 h-4" />
-                      Analyze Satellite Images in AI Chat →
-                    </button>
-                  </div>
-                </div>
-              )}
+            <div className="inline-flex items-center gap-2 px-5 py-3.5 rounded-2xl text-sm text-white/50 font-medium
+              bg-white/5 border border-white/8 backdrop-blur-sm select-none"
+            >
+              <MousePointer2 className="w-4 h-4 text-white/30" />
+              <span>Drag · Scroll · Click to pin</span>
             </div>
           </div>
         </div>
 
-        {/* ── Feature Grid ─────────────────────────────────────────────── */}
-        <div className="mt-20 pt-12 border-t border-slate-800/50">
-          <div className="text-center max-w-2xl mx-auto mb-10">
-            <h2 className="text-3xl font-extrabold text-white mb-3">
-              Engineered for High-Resolution Remote Sensing
-            </h2>
-            <p className="text-slate-400 text-sm">
-              Powered by Qwen2-VL-7B-Instruct, GeoTIFF multispectral preprocessing, and deterministic query routing.
-            </p>
+        {/* Bottom scroll hint */}
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 pointer-events-none
+          flex flex-col items-center gap-2 text-white/25 text-[11px] font-medium tracking-widest uppercase"
+        >
+          <div className="w-px h-10 bg-gradient-to-b from-transparent to-white/20 rounded-full" />
+          <span>Scroll</span>
+        </div>
+      </div>
+
+      {/* ── Stats Bar ─────────────────────────────────────────────────── */}
+      <div className="relative z-20 border-t border-b border-white/5 bg-white/[0.02] backdrop-blur-sm">
+        <div className="max-w-5xl mx-auto px-6 py-5 grid grid-cols-2 md:grid-cols-4 gap-6">
+          {[
+            { value: 'Qwen2-VL', label: '7B Vision Backbone' },
+            { value: '4-bit', label: 'LoRA Quantized' },
+            { value: 'GeoTIFF', label: 'Native Band Support' },
+            { value: 'VQA + Cap', label: 'Dual Task Routing' },
+          ].map(stat => (
+            <div key={stat.label} className="text-center">
+              <div className="text-lg font-extrabold text-sky-300 tracking-tight mb-0.5">{stat.value}</div>
+              <div className="text-[11px] text-white/35 font-medium uppercase tracking-wider">{stat.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Feature Cards ────────────────────────────────────────────── */}
+      <div className="relative z-20 py-20 px-4 max-w-5xl mx-auto">
+        <div className="text-center mb-14">
+          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full
+            bg-sky-500/10 border border-sky-500/20 text-sky-400 text-xs font-semibold tracking-wider uppercase mb-5"
+          >
+            <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+            Core Capabilities
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {[
-              { icon: Cpu, color: 'sky', title: 'Qwen2-VL 7B Vision Backbone',
-                body: 'Variable-resolution dynamic patching. 4-bit quantized for rapid local inference on consumer GPUs.' },
-              { icon: Layers, color: 'indigo', title: 'GeoTIFF Band Extraction',
-                body: 'Preserves spatial CRS metadata and constructs balanced RGB representations from multispectral layers.' },
-              { icon: Zap, color: 'cyan', title: 'Deterministic VQA Router',
-                body: 'Automatically routes scene description prompts to captioning pipelines and specific queries to VQA modes.' },
-            ].map(({ icon: Icon, color, title, body }) => (
-              <div key={title}
-                className={`bg-slate-900/60 border border-slate-800 rounded-2xl p-6 hover:border-${color}-500/30 transition-all group`}>
-                <div className={`w-12 h-12 rounded-xl bg-${color}-500/10 border border-${color}-500/25 flex items-center justify-center text-${color}-400 mb-4 group-hover:scale-110 transition-transform`}>
-                  <Icon className="w-6 h-6" />
-                </div>
-                <h3 className="text-base font-bold text-white mb-2">{title}</h3>
-                <p className="text-slate-400 text-xs leading-relaxed">{body}</p>
-              </div>
-            ))}
-          </div>
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-white mb-4 tracking-tight">
+            Built for Remote Sensing
+          </h2>
+          <p className="text-white/40 text-sm max-w-lg mx-auto leading-relaxed">
+            Every component of the pipeline is optimised for satellite and aerial imagery — from spectral preprocessing to domain-adapted inference.
+          </p>
         </div>
 
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {FEATURES.map(({ icon: Icon, color, title, body }) => (
+            <div
+              key={title}
+              className="group relative p-6 rounded-3xl border border-white/6 bg-white/[0.03]
+                hover:bg-white/[0.06] hover:border-white/10 transition-all duration-300
+                backdrop-blur-sm overflow-hidden"
+            >
+              {/* Glow accent */}
+              <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full opacity-0
+                group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
+                style={{ background: `radial-gradient(circle, rgba(56,189,248,0.12), transparent 70%)` }}
+              />
+
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-5
+                bg-sky-500/10 border border-sky-500/20 text-sky-400
+                group-hover:scale-110 transition-transform duration-300"
+              >
+                <Icon className="w-5 h-5" />
+              </div>
+              <h3 className="text-base font-bold text-white mb-2">{title}</h3>
+              <p className="text-white/40 text-xs leading-relaxed">{body}</p>
+            </div>
+          ))}
+        </div>
       </div>
+
+      {/* ── Full-width CTA Banner ────────────────────────────────────── */}
+      <div className="relative z-20 mb-20 mx-4 sm:mx-8 lg:mx-16">
+        <div className="relative overflow-hidden rounded-3xl border border-white/8 p-10 sm:p-14 text-center"
+          style={{
+            background: 'linear-gradient(135deg, rgba(14,165,233,0.12), rgba(99,102,241,0.12), rgba(6,182,212,0.08))',
+          }}
+        >
+          {/* Background globe glow */}
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+            <div className="w-[600px] h-[300px] rounded-full"
+              style={{ background: 'radial-gradient(ellipse, rgba(56,189,248,0.08), transparent 70%)' }} />
+          </div>
+
+          <div className="relative z-10">
+            <Satellite className="w-10 h-10 text-sky-400/60 mx-auto mb-5" />
+            <h2 className="text-3xl sm:text-4xl font-extrabold text-white mb-4 tracking-tight">
+              Start Querying Satellite Imagery
+            </h2>
+            <p className="text-white/40 text-sm max-w-md mx-auto leading-relaxed mb-8">
+              Upload any PNG, JPEG, TIFF, or GeoTIFF. Ask in plain English. Get structured answers with land-cover analysis, execution traces, and spectral metadata.
+            </p>
+            <button
+              onClick={onNavigateToChat}
+              className="group inline-flex items-center gap-3 px-10 py-4 rounded-2xl font-bold text-sm text-white
+                hover:scale-[1.03] active:scale-[0.97] transition-all duration-200 shadow-2xl"
+              style={{
+                background: 'linear-gradient(135deg, #0ea5e9, #6366f1, #06b6d4)',
+                boxShadow: '0 0 40px rgba(56,189,248,0.2)',
+              }}
+            >
+              <MessageSquare className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+              Open AI Satellite Chatbot
+              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer micro-text */}
+      <div className="relative z-20 pb-8 text-center text-white/20 text-xs font-mono tracking-widest">
+        SATQUERY AI · AYUSHFRONTEND · REMOTE SENSING INTELLIGENCE
+      </div>
+
     </div>
   );
 }
