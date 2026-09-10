@@ -167,4 +167,145 @@ def test_trace_records_available_indices():
     assert "indices" in trace
     assert isinstance(trace["indices"], list)
 
-    
+
+def test_ndvi_classifies_elevated_vegetation():
+    band_names = ["red", "green", "blue", "nir"]
+
+    t1_values = np.zeros((4, 8, 8), dtype=np.float32)
+    t2_values = np.zeros((4, 8, 8), dtype=np.float32)
+
+    # Background: low NDVI.
+    t1_values[0] = 0.8  # red
+    t1_values[3] = 0.2  # nir
+
+    # Changed region: two vegetation levels.
+    t1_values[0, :2, :4] = 0.1
+    t1_values[3, :2, :4] = 0.9
+
+    t1_values[0, 2:4, :4] = 0.2
+    t1_values[3, 2:4, :4] = 0.8
+
+    t2_values[:] = t1_values
+
+    t1 = make_optical_image(
+        band_names=band_names,
+        values=t1_values,
+    )
+    t2 = make_optical_image(
+        band_names=band_names,
+        values=t2_values,
+    )
+
+    _, _, trace = classify_pair(t1, t2)
+
+    assert "ndvi" in trace["indices"]
+    assert trace["t1"]["class_splits"]["ndvi_tree_threshold"] is not None
+
+
+def test_ndwi_classifies_elevated_water():
+    band_names = ["green", "red", "blue", "nir"]
+
+    t1_values = np.zeros((4, 8, 8), dtype=np.float32)
+    t2_values = np.zeros((4, 8, 8), dtype=np.float32)
+
+    # Background: low NDWI.
+    t1_values[0] = 0.2  # green
+    t1_values[3] = 0.8  # nir
+
+    # Changed region: high NDWI.
+    t1_values[0, :4, :4] = 0.9
+    t1_values[3, :4, :4] = 0.1
+
+    t2_values[:] = t1_values
+
+    t1 = make_optical_image(
+        band_names=band_names,
+        values=t1_values,
+    )
+    t2 = make_optical_image(
+        band_names=band_names,
+        values=t2_values,
+    )
+
+    _, _, trace = classify_pair(t1, t2)
+
+    assert "ndwi" in trace["indices"]
+    assert trace["t1"]["thresholds"]["ndwi"] is not None
+
+
+def test_trace_records_ambiguous_index_overlap():
+    band_names = ["red", "green", "blue", "nir", "swir"]
+
+    t1_values = np.zeros((5, 8, 8), dtype=np.float32)
+    t2_values = np.zeros((5, 8, 8), dtype=np.float32)
+
+    # Background: moderate values that yield low index scores.
+    t1_values[0] = 0.5  # red
+    t1_values[1] = 0.5  # green
+    t1_values[2] = 0.5  # blue
+    t1_values[3] = 0.5  # nir
+    t1_values[4] = 0.5  # swir
+
+    # Overlap region (top-left quadrant):
+    # High NIR → high NDVI  (NIR >> RED)
+    # High SWIR → high NDBI (SWIR >> NIR in a relative sense)
+    #
+    # NDVI = (nir - red)/(nir + red) = (0.9 - 0.1)/(0.9 + 0.1) = 0.8
+    # NDBI = (swir - nir)/(swir + nir) = (0.95 - 0.9)/(0.95 + 0.9) ≈ 0.027
+    #
+    # We need NDBI to also be elevated. Use very high SWIR with
+    # lower NIR so both NDVI and NDBI are above Otsu thresholds.
+    #
+    # Adjusted: NIR=0.6, RED=0.05 → NDVI ≈ 0.846
+    #           SWIR=0.95, NIR=0.6 → NDBI ≈ 0.226
+    # Background: NIR=0.5, RED=0.5 → NDVI = 0.0
+    #             SWIR=0.5, NIR=0.5 → NDBI = 0.0
+    # Otsu will split around these, making both elevated in the region.
+    t1_values[0, :4, :4] = 0.05  # red  → pushes NDVI high
+    t1_values[3, :4, :4] = 0.6   # nir
+    t1_values[4, :4, :4] = 0.95  # swir → pushes NDBI high
+
+    t2_values[:] = t1_values
+
+    t1 = make_optical_image(
+        band_names=band_names,
+        values=t1_values,
+    )
+    t2 = make_optical_image(
+        band_names=band_names,
+        values=t2_values,
+    )
+
+    _, _, trace = classify_pair(t1, t2)
+
+    # At least one date must record the overlap ambiguity.
+    ambiguity_t1 = trace["t1"]["ambiguity"]
+    ambiguity_t2 = trace["t2"]["ambiguity"]
+
+    all_ambiguity = ambiguity_t1 + ambiguity_t2
+
+    has_overlap_note = any(
+        "multiple" in entry.lower() for entry in all_ambiguity
+    )
+
+    assert has_overlap_note, (
+        f"Expected an ambiguity entry mentioning 'multiple', "
+        f"got: {all_ambiguity}"
+    )
+
+    assert trace["t1"]["precedence"] == ["ndwi", "ndbi", "ndvi"]
+
+
+def test_confidence_is_marked_as_conservative():
+    t1 = make_optical_image()
+    t2 = make_optical_image()
+
+    _, _, trace = classify_pair(t1, t2)
+
+    assert "confidence" in trace
+    assert isinstance(trace["confidence"], (int, float))
+    assert 0 <= trace["confidence"] <= 1
+
+    assert trace["producer"] == "index_classifier"
+    assert "physics-based approximation" in trace["note"]
+    assert trace["confidence_type"] == "conservative_heuristic"

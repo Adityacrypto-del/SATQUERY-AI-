@@ -16,7 +16,7 @@ so this producer never predicts class 6 (playgrounds).
 This is a physics-based approximation, not a trained classifier.
 """
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 import numpy as np
 
@@ -78,6 +78,7 @@ def _classify_optical(
         "thresholds": {},
         "class_splits": {},
         "ambiguity": [],
+        "precedence": ["ndwi", "ndbi", "ndvi"],
     }
 
     if not available:
@@ -110,11 +111,14 @@ def _classify_optical(
             )
 
     # ------------------------------------------------------------
-    # 2. Build vegetation classification.
+    # 2. Build vegetation classification (lowest precedence).
     #
     # NDVI elevated pixels are vegetation.
     # A second Otsu split separates stronger vegetation (trees)
     # from moderate vegetation (low vegetation).
+    #
+    # Precedence: NDVI assignments may be overwritten by NDWI
+    # (water) or NDBI (built-up) in later steps.
     # ------------------------------------------------------------
     if "ndvi" in index_maps:
         ndvi_values = index_maps["ndvi"]
@@ -157,7 +161,7 @@ def _classify_optical(
                 )
 
     # ------------------------------------------------------------
-    # 3. Water.
+    # 3. Water (highest precedence).
     #
     # Water is assigned where NDWI fires. Water takes precedence
     # over vegetation because open water has a distinct spectral
@@ -169,11 +173,16 @@ def _classify_optical(
         semantic[water_mask] = WATER
 
     # ------------------------------------------------------------
-    # 4. Built-up / non-vegetated ground.
+    # 4. Built-up / non-vegetated ground (middle precedence).
     #
     # NDBI elevated pixels are split using a second Otsu threshold.
     # Stronger NDBI → buildings.
     # Lower elevated NDBI → non-vegetated ground surface.
+    #
+    # NDBI overwrites earlier NDVI assignments but is itself
+    # overwritten by NDWI water in the step above (water was
+    # assigned first, but NDBI writes after NDVI, so the
+    # effective precedence is: NDWI > NDBI > NDVI).
     # ------------------------------------------------------------
     if "ndbi" in index_maps:
         ndbi_values = index_maps["ndbi"]
@@ -218,8 +227,10 @@ def _classify_optical(
     # ------------------------------------------------------------
     # 5. Resolve pixels where multiple indices fired.
     #
-    # Water has already been given precedence. For the remaining
-    # conflicts, the last assignment above determines the class.
+    # The effective precedence is:
+    #     NDWI (water) > NDBI (built-up) > NDVI (vegetation)
+    # This is enforced by assignment order: NDVI is written
+    # first, then NDWI overwrites, then NDBI overwrites.
     # Record the existence of such conflicts for the trace.
     # ------------------------------------------------------------
     masks = [
@@ -283,6 +294,7 @@ def _classify_sar(
         "sar_operator": result.operator,
         "producer": "index_classifier",
         "note": "physics-based approximation, not a trained classifier",
+        "confidence_type": "conservative_heuristic",
         "limitation": (
             "SAR-only input supports binary change detection through "
             "log-ratio, but does not provide reliable semantic class "
@@ -337,8 +349,8 @@ def classify_pair(
             t2,
         )
 
-        # Conservative confidence: this producer is explicitly
-        # weaker than the trained semantic segmentation producer.
+        # Conservative, non-calibrated confidence: this producer
+        # is a physics-based heuristic, not a trained classifier.
         trace["confidence"] = 0.50
 
         return s_t1, s_t2, trace
@@ -377,6 +389,8 @@ def classify_pair(
         "producer": "index_classifier",
         "note": "physics-based approximation, not a trained classifier",
         "confidence": 0.50,
+        "confidence_type": "conservative_heuristic",
+        "precedence": ["ndwi", "ndbi", "ndvi"],
         "indices": sorted(
             set(trace_t1["indices"])
             | set(trace_t2["indices"])
