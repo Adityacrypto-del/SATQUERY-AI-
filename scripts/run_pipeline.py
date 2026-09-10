@@ -69,8 +69,8 @@ def main() -> None:
     # ─────────────────────────────────────────────────────────
     step("STEP 2: Show dataset images")
     preview_path = str(out_dir / "dataset_preview.png")
+    from scripts.show_dataset_images import load_manifest, make_grid
     try:
-        from scripts.show_dataset_images import load_manifest, make_grid
         records = load_manifest(str(vrs_manifest))
         make_grid(records, n, preview_path, title="VRSBench — Remote Sensing Dataset Samples")
         print(f"✅ Dataset preview saved → {preview_path}")
@@ -129,7 +129,6 @@ def main() -> None:
     # ─────────────────────────────────────────────────────────
     step("STEP 5: End-to-end inference (VQA + Captioning)")
     from satquery.single_image_api import analyze_single_image
-    from scripts.show_dataset_images import load_manifest
 
     vrs_records = load_manifest(str(vrs_manifest))[:n]
     all_results = []

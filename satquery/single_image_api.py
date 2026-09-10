@@ -35,7 +35,7 @@ def _get_model(lora_path: str = "") -> RSVLM:
 
 def _as_pil_image(rgb: np.ndarray) -> Image.Image:
     """Convert preprocessed RGB data into the exact image sent to the VLM."""
-    return Image.fromarray(np.rint(np.clip(rgb, 0, 1) * 255).astype("uint8"), mode="RGB")
+    return Image.fromarray(np.rint(np.clip(rgb, 0, 1) * 255).astype("uint8"))
 
 
 def analyze_single_image(
