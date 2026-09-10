@@ -1,9 +1,10 @@
 torch
 torchvision
-transformers
+transformers>=4.45.0
 datasets
-peft
-accelerate
+peft>=0.7.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
 Pillow
 rasterio
 numpy
@@ -20,3 +21,4 @@ nltk
 sentencepiece
 scipy
 pytest
+qwen-vl-utils

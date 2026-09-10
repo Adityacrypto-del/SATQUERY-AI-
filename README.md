@@ -4,6 +4,15 @@ SatQuery AI is a focused single-satellite-image module for a larger geospatial
 assistant. Given exactly one PNG, JPEG, TIFF, or GeoTIFF and a natural-language
 query, it either answers a visual question or creates a scene description.
 
+## Model
+
+**Qwen2-VL-7B-Instruct** — chosen for:
+- State-of-the-art VQA and captioning performance
+- Variable-resolution input (critical for satellite imagery)
+- Fits in 8-16GB VRAM with 4-bit quantization + LoRA
+- Multilingual support
+- Strong LoRA/PEFT fine-tuning community
+
 ## What this branch delivers
 
 - Deterministic query routing: descriptions go to captioning; other prompts go
@@ -11,8 +20,8 @@ query, it either answers a visual question or creates a scene description.
 - Strict single-image validation with PNG/JPEG/TIFF/GeoTIFF decoding.
 - GeoTIFF-aware preprocessing that preserves source metadata and explicitly
   records the RGB band representation sent to the vision-language model.
-- BLIP-2 inference wrapper, with optional PEFT/LoRA remote-sensing adapter
-  loading.
+- Qwen2-VL-7B inference wrapper, with optional 4-bit quantization and
+  PEFT/LoRA remote-sensing adapter loading.
 - Small-data preparation, LoRA adaptation, RSVQA evaluation, VRSBench caption
   evaluation, and an end-to-end runner.
 
@@ -49,9 +58,15 @@ For a compact end-to-end experiment, use:
 python scripts/run_pipeline.py --hf-token "$HF_TOKEN" --n-samples 10 --lora-steps 50
 ```
 
+## Hardware requirements
+
+- **Inference**: 8GB+ VRAM (4-bit quantized) or 16GB+ (float16)
+- **Training**: 12GB+ VRAM recommended (4-bit + LoRA)
+- **CPU/MPS**: Works but significantly slower
+
 ## Required before a final demo
 
-1. A reachable Hugging Face token (when the selected data/model requires one).
+1. A reachable Hugging Face token (for Qwen2-VL model weights).
 2. A small, documented remote-sensing instruction subset and the resulting
    LoRA checkpoint under `checkpoints/rs_vlm_lora/`.
 3. Saved evaluation output from both RSVQA (VQA) and VRSBench (captioning).

@@ -1,7 +1,7 @@
-"""Prepare RS-LLaVA instruction dataset for LoRA adaptation.
+"""Prepare RS instruction dataset for Qwen2-VL LoRA adaptation.
 
-Downloads the RS-instruction data from HuggingFace and converts it to a
-format suitable for BLIP-2 LoRA fine-tuning.
+Downloads RS-instruction/VQA data from HuggingFace and converts it to
+a format suitable for Qwen2-VL LoRA fine-tuning.
 
 Usage:
     python -m satquery.adaptation.prepare_instructions --out data/rs_instructions --n 500
