@@ -27,7 +27,8 @@ data/
 # Model directories
 vicuna-7b-v1.5/
 checkpoints/
-outputs/
+outputs/*
+!outputs/eval_log.md
 runs/
 
 # macOS
