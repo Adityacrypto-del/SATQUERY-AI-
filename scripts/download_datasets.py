@@ -71,53 +71,85 @@ def save_vrsbench_subset(out_dir: Path, split: str, n: int, token: str) -> dict[
 
 
 def download_rsvqa_lr_metadata(out_dir: Path, token: str) -> dict[str, Any]:
-    """Download RSVQA-LR JSON annotations from HF (rsvqa-lr is mirrored there)."""
+    """Download RSVQA-LR annotations, with multiple fallback strategies."""
     from datasets import load_dataset
 
-    print("[download] Loading RSVQA-LR via datasets (EarthVQA/rsvqa-lr) …")
     rsvqa_dir = out_dir / "rsvqa_lr"
     rsvqa_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        # Try RSVQA-LR from HF mirror
-        ds = load_dataset(
-            "EarthVQA/rsvqa-lr",
-            split="test",
-            streaming=True,
-            token=token,
-        )
+    # Strategy 1: Try RSVQA-HR from the Zenodo mirror
+    hr_sources = [
+        ("cvg/rs-vqa-hr", "test"),
+        ("flamingos/RSVQA-HR", "test"),
+    ]
+    for repo_id, split in hr_sources:
+        try:
+            print(f"[download] Trying {repo_id} ({split}) …")
+            ds = load_dataset(repo_id, split=split, streaming=True, token=token)
+            records: list[dict[str, Any]] = []
+            for idx, row in enumerate(itertools.islice(ds, 50)):
+                img = row.get("image")
+                img_path = None
+                if img is not None and hasattr(img, "save"):
+                    p = rsvqa_dir / f"rsvqa_{idx:04d}.jpg"
+                    img.save(str(p), format="JPEG")
+                    img_path = str(p)
+
+                records.append({
+                    "id": idx,
+                    "image_path": img_path,
+                    "question": row.get("question", ""),
+                    "answer": row.get("answer", ""),
+                    "type": row.get("type", ""),
+                })
+                print(f"  [{idx+1}/50] RSVQA sample saved")
+
+            if records:
+                manifest = rsvqa_dir / "manifest.json"
+                manifest.write_text(json.dumps(records, indent=2))
+                print(f"[download] RSVQA manifest: {manifest}")
+                return {"dataset": "RSVQA", "num_records": len(records), "manifest": str(manifest)}
+        except Exception as exc:
+            print(f"[download] {repo_id} failed: {exc}")
+            continue
+
+    # Strategy 2: Build synthetic RSVQA-style pairs from VRSBench QA data
+    vrs_manifest = out_dir / "vrsbench" / "sample" / "manifest.json"
+    if vrs_manifest.exists():
+        print("[download] Building RSVQA-style pairs from VRSBench QA data …")
+        with open(vrs_manifest, encoding="utf-8") as f:
+            vrs_records = json.load(f)
         records = []
-        for idx, row in enumerate(itertools.islice(ds, 50)):
-            img = row.get("image")
-            img_path = None
-            if img is not None and hasattr(img, "save"):
-                p = rsvqa_dir / f"rsvqa_{idx:04d}.jpg"
-                img.save(str(p), format="JPEG")
-                img_path = str(p)
-
-            records.append({
-                "id": idx,
-                "image_path": img_path,
-                "question": row.get("question", ""),
-                "answer": row.get("answer", ""),
-                "type": row.get("type", ""),
-            })
-            print(f"  [{idx+1}/50] RSVQA-LR sample saved")
-
+        for rec in vrs_records:
+            img_path = rec.get("image_path")
+            if not img_path or not Path(img_path).exists():
+                continue
+            qa_pairs = rec.get("qa_pairs") or []
+            for qa in qa_pairs[:3]:
+                q = qa.get("question") or qa.get("Q", "")
+                a = qa.get("answer") or qa.get("A", "")
+                if q and a:
+                    records.append({
+                        "id": len(records),
+                        "image_path": img_path,
+                        "question": str(q),
+                        "answer": str(a),
+                        "type": "synthetic_from_vrsbench",
+                    })
+            if len(records) >= 50:
+                break
+        records = records[:50]
         manifest = rsvqa_dir / "manifest.json"
         manifest.write_text(json.dumps(records, indent=2))
-        print(f"[download] RSVQA-LR manifest: {manifest}")
-        return {"dataset": "RSVQA-LR", "num_records": len(records), "manifest": str(manifest)}
+        print(f"[download] Synthetic RSVQA manifest: {manifest} ({len(records)} records)")
+        return {"dataset": "RSVQA-synthetic", "num_records": len(records), "manifest": str(manifest)}
 
-    except Exception as exc:
-        print(f"[download] RSVQA-LR via HF failed: {exc}")
-        print("[download] Falling back to synthetic RSVQA samples for smoke-test …")
-        # Create minimal synthetic test set from VRSBench QA pairs
-        return {
-            "dataset": "RSVQA-LR",
-            "num_records": 0,
-            "note": f"HF dataset unavailable: {exc}. Use VRSBench QA pairs instead.",
-        }
+    print("[download] All RSVQA sources failed and no VRSBench data available.")
+    return {
+        "dataset": "RSVQA-LR",
+        "num_records": 0,
+        "note": "All HF datasets unavailable. Run VRSBench download first.",
+    }
 
 
 def write_official_links(base_dir: Path) -> None:

@@ -18,6 +18,32 @@ class ModelResult:
     confidence_method: Optional[str] = None
 
 
+def _heuristic_confidence(text: str) -> tuple[float | None, str]:
+    """Estimate a simple heuristic confidence from the generated text.
+
+    Heuristics:
+      - Empty / very short text -> low confidence.
+      - Text contains hedging phrases ("maybe", "not sure", "unclear") -> medium.
+      - Longer, decisive text -> higher confidence.
+
+    This is explicitly *not* calibrated probability.  The method name is
+    recorded so callers know the confidence is heuristic.
+    """
+    if not text or not text.strip():
+        return 0.0, "heuristic_empty"
+    length = len(text.strip())
+    hedge_words = {"maybe", "perhaps", "unclear", "not sure", "possibly", "unknown"}
+    tokens = set(text.lower().split())
+    hedge_overlap = tokens & hedge_words
+    if length < 5:
+        return 0.2, "heuristic_short"
+    if hedge_overlap:
+        return 0.35, "heuristic_hedging"
+    if length > 60:
+        return 0.7, "heuristic_lengthy"
+    return 0.55, "heuristic_default"
+
+
 class RSVLM:
     """Remote-sensing vision-language model wrapper.
 
@@ -116,7 +142,8 @@ class RSVLM:
             f"Answer:"
         )
         text = self._run_inference(image, prompt)
-        return ModelResult(text=text, confidence=None, confidence_method="not_available")
+        conf, method = _heuristic_confidence(text)
+        return ModelResult(text=text, confidence=conf, confidence_method=method)
 
     def caption(self, image: Optional[Image.Image] = None) -> ModelResult:
         if image is None:
@@ -126,7 +153,8 @@ class RSVLM:
             "Include land cover, major visible objects, spatial context, and scene characteristics:"
         )
         text = self._run_inference(image, prompt)
-        return ModelResult(text=text)
+        conf, method = _heuristic_confidence(text)
+        return ModelResult(text=text, confidence=conf, confidence_method=method)
 
     @classmethod
     def load_with_lora(cls, lora_path: str) -> "RSVLM":

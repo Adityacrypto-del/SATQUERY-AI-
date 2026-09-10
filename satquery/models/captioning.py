@@ -13,5 +13,7 @@ def generate_caption(model: RSVLM, image: Image.Image, image_path: str = "") -> 
         "task": "captioning",
         "caption": result.text,
         "model": model.model_name,
+        "confidence": result.confidence,
+        "confidence_method": result.confidence_method,
         "evidence": {"image": image_path},
     }
