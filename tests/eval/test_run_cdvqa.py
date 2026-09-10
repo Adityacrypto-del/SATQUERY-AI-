@@ -14,10 +14,13 @@ import pytest
 
 from eval.run_cdvqa import (
     CDVQA_ANSWERS,
+    CDVQA_GROUPS,
     QUESTION_TYPES,
     CDVQASample,
     assert_no_pair_leakage,
     evaluate,
+    group_of,
+    load_cdvqa_split,
     load_split,
     per_type_majority_baseline,
     majority_class_baseline,
@@ -47,12 +50,21 @@ def _write_split(path, records):
 def test_answer_vocabulary_is_the_official_nineteen():
     assert len(CDVQA_ANSWERS) == 19
     assert len(set(CDVQA_ANSWERS)) == 19
-    for expected in ("no", "yes", "0", "water", "playgrounds", "90%-100%"):
+    # Verbatim dataset spellings, not CLAUDE.md's paraphrase.
+    for expected in ("no", "yes", "0", "water", "playgrounds", "90_to_100",
+                     "NVG_surface", "low_vegetation", "0_to_10"):
         assert expected in CDVQA_ANSWERS
+    for paraphrase in ("90%-100%", "NVG surface", "low vegetation"):
+        assert paraphrase not in CDVQA_ANSWERS
 
 
-def test_all_five_question_types_are_declared():
-    assert len(QUESTION_TYPES) == 5
+def test_the_eight_native_types_group_into_the_five_rule_families():
+    assert len(QUESTION_TYPES) == 8
+    assert {group_of(t) for t in QUESTION_TYPES} == set(CDVQA_GROUPS)
+    assert len(CDVQA_GROUPS) == 5
+    assert group_of("increase_or_not") == "increase_or_decrease"
+    assert group_of("smallest_change") == "largest_smallest_change"
+    assert group_of("change_ratio_types") == "change_ratio"
 
 
 # --------------------------------------------------------------------------
@@ -64,13 +76,13 @@ def test_per_type_and_overall_accuracy_are_computed_separately():
     samples = [
         _sample("p1", "change_or_not", "yes"),
         _sample("p2", "change_or_not", "no"),
-        _sample("p3", "change_ratio", "0%-10%"),
-        _sample("p4", "change_ratio", "10%-20%"),
-        _sample("p5", "change_ratio", "20%-30%"),
-        _sample("p6", "change_ratio", "30%-40%"),
+        _sample("p3", "change_ratio", "0_to_10"),
+        _sample("p4", "change_ratio", "10_to_20"),
+        _sample("p5", "change_ratio", "20_to_30"),
+        _sample("p6", "change_ratio", "30_to_40"),
     ]
     # change_or_not: 1/2 correct. change_ratio: 3/4 correct.
-    predictions = ["yes", "yes", "0%-10%", "10%-20%", "20%-30%", "0%-10%"]
+    predictions = ["yes", "yes", "0_to_10", "10_to_20", "20_to_30", "0_to_10"]
 
     report = evaluate(samples, predictions)
 
@@ -133,7 +145,7 @@ def test_per_type_majority_baseline_is_conditioned_on_question_type():
         _sample("p2", "change_or_not", "no"),
         _sample("p3", "change_ratio", "0"),
         _sample("p4", "change_ratio", "0"),
-        _sample("p5", "change_ratio", "10%-20%"),
+        _sample("p5", "change_ratio", "10_to_20"),
     ]
 
     predict = per_type_majority_baseline(train)
@@ -225,3 +237,43 @@ def test_unrecognised_field_names_report_what_was_actually_found(tmp_path):
 
     message = str(excinfo.value)
     assert "img" in message and "pair_id" in message
+
+
+# --------------------------------------------------------------------------
+# The official three-file release format
+# --------------------------------------------------------------------------
+
+
+def test_load_cdvqa_split_joins_images_questions_and_answers(tmp_path):
+    """pair_id must be the scene filename, not the question-group entry id.
+
+    Roughly sixteen image entries share one file_name. Keying on the entry id
+    would make the leakage check compare the wrong thing and pass a split
+    that actually shares scenes.
+    """
+    (tmp_path / "Toy_images.json").write_text(json.dumps({"images": [
+        {"id": 0, "file_name": "01503.png", "questions_ids": [0]},
+        {"id": 1, "file_name": "01503.png", "questions_ids": [1]},
+    ]}), encoding="utf-8")
+    (tmp_path / "Toy_questions.json").write_text(json.dumps({"questions": [
+        {"id": 0, "img_id": 0, "type": "change_or_not", "question": "q0",
+         "answers_ids": [0]},
+        {"id": 1, "img_id": 1, "type": "change_ratio", "question": "q1",
+         "answers_ids": [1]},
+    ]}), encoding="utf-8")
+    (tmp_path / "Toy_answers.json").write_text(json.dumps({"answers": [
+        {"id": 0, "answer": "yes"},
+        {"id": 1, "answer": "0_to_10"},
+    ]}), encoding="utf-8")
+
+    samples = load_cdvqa_split(str(tmp_path), "Toy")
+
+    assert len(samples) == 2
+    # Both questions came from different entries of the same scene.
+    assert {s.pair_id for s in samples} == {"01503.png"}
+    assert samples[1].answer == "0_to_10"
+
+
+def test_missing_official_split_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_cdvqa_split(str(tmp_path), "Nope")

@@ -30,7 +30,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 __all__ = [
     "CDVQA_ANSWERS",
+    "CDVQA_GROUPS",
     "QUESTION_TYPES",
+    "QUESTION_TYPE_GROUPS",
+    "group_of",
+    "load_cdvqa_split",
     "CDVQASample",
     "assert_no_pair_leakage",
     "evaluate",
@@ -39,37 +43,74 @@ __all__ = [
     "per_type_majority_baseline",
 ]
 
-# The 19 answers, exactly as CLAUDE.md section 2 lists them. Order is the
-# paper's frequency order and is preserved for comparability.
+# The 19 answers, verbatim as they appear in the released CDVQA JSON, in
+# training-set frequency order. CLAUDE.md section 2 paraphrases these with
+# percentage signs and spaces ("0%-10%", "NVG surface"); the dataset itself
+# uses underscores. Scoring compares against the dataset, so these strings
+# are the authority and the paraphrase is not.
 CDVQA_ANSWERS = (
     "no",
     "yes",
-    "0%-10%",
+    "NVG_surface",
     "0",
-    "NVG surface",
+    "0_to_10",
     "buildings",
-    "low vegetation",
-    "10%-20%",
+    "low_vegetation",
     "trees",
-    "20%-30%",
+    "10_to_20",
     "water",
-    "80%-90%",
-    "30%-40%",
-    "90%-100%",
-    "70%-80%",
-    "40%-50%",
-    "60%-70%",
-    "50%-60%",
+    "80_to_90",
+    "20_to_30",
+    "90_to_100",
+    "70_to_80",
+    "30_to_40",
+    "60_to_70",
+    "40_to_50",
     "playgrounds",
+    "50_to_60",
 )
 
+# The eight question types the dataset actually declares.
 QUESTION_TYPES = (
+    "change_or_not",
+    "increase_or_not",
+    "decrease_or_not",
+    "change_to_what",
+    "largest_change",
+    "smallest_change",
+    "change_ratio",
+    "change_ratio_types",
+)
+
+# The five rule families in CLAUDE.md section 2 are a grouping of those eight:
+# increase/decrease are asked separately, as are largest/smallest, and the
+# ratio rule covers both the whole-scene and the per-class question.
+# Reported both ways because it is not established which granularity the
+# paper's table uses, and picking one silently would make our numbers
+# look comparable when they might not be.
+QUESTION_TYPE_GROUPS = {
+    "change_or_not": "change_or_not",
+    "increase_or_not": "increase_or_decrease",
+    "decrease_or_not": "increase_or_decrease",
+    "change_to_what": "change_to_what",
+    "largest_change": "largest_smallest_change",
+    "smallest_change": "largest_smallest_change",
+    "change_ratio": "change_ratio",
+    "change_ratio_types": "change_ratio",
+}
+
+CDVQA_GROUPS = (
     "change_or_not",
     "increase_or_decrease",
     "change_to_what",
     "largest_smallest_change",
     "change_ratio",
 )
+
+
+def group_of(question_type: str) -> str:
+    """Map a native question type onto its CLAUDE.md rule family."""
+    return QUESTION_TYPE_GROUPS.get(question_type, question_type)
 
 # Accepted JSON key spellings, most explicit first. The public CDVQA release
 # and our own exports do not agree on these, so the loader adapts rather than
@@ -177,6 +218,63 @@ def load_split(path: str) -> List[CDVQASample]:
     return samples
 
 
+def load_cdvqa_split(root: str, split: str) -> List[CDVQASample]:
+    """Load one official CDVQA split from its released three-file form.
+
+    The release stores a split as ``<Split>_images.json`` /
+    ``_questions.json`` / ``_answers.json`` and joins them by id. An image
+    entry is a *question group*, not a scene: roughly sixteen entries share
+    one ``file_name``. The scene filename is what identifies the image pair,
+    so that -- not the entry id -- becomes ``pair_id`` and therefore the key
+    the leakage check works on.
+    """
+    paths = {
+        part: os.path.join(root, f"{split}_{part}.json")
+        for part in ("images", "questions", "answers")
+    }
+    for part, path in paths.items():
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"CDVQA {split} {part} not found: {path!r}. "
+                "Accuracy is NOT_YET_MEASURED until the official split is present."
+            )
+
+    def _read(part: str) -> List[Dict[str, Any]]:
+        with open(paths[part], "r", encoding="utf-8") as handle:
+            return json.load(handle)[part]
+
+    file_name_by_entry = {
+        entry["id"]: entry["file_name"] for entry in _read("images")
+    }
+    answer_by_id = {row["id"]: row["answer"] for row in _read("answers")}
+
+    samples: List[CDVQASample] = []
+    for question in _read("questions"):
+        answer_ids = question.get("answers_ids") or []
+        if len(answer_ids) != 1:
+            raise ValueError(
+                f"question {question['id']} in {split} has {len(answer_ids)} "
+                "answers; CDVQA is single-answer classification"
+            )
+        answer = answer_by_id[answer_ids[0]]
+        key = normalise_answer(answer)
+        if key not in _ANSWER_LOOKUP:
+            raise ValueError(
+                f"question {question['id']} in {split} has answer {answer!r}, "
+                "which is outside the 19-way CDVQA vocabulary."
+            )
+        pair_id = file_name_by_entry[question["img_id"]]
+        samples.append(
+            CDVQASample(
+                pair_id=pair_id,
+                question=question["question"],
+                answer=_ANSWER_LOOKUP[key],
+                question_type=question["type"],
+            )
+        )
+    return samples
+
+
 def assert_no_pair_leakage(
     train: Sequence[CDVQASample], test: Sequence[CDVQASample]
 ) -> None:
@@ -246,25 +344,37 @@ def per_type_majority_baseline(train: Sequence[CDVQASample]) -> Predictor:
 
 
 def evaluate(
-    samples: Sequence[CDVQASample], predictions: Sequence[str]
+    samples: Sequence[CDVQASample],
+    predictions: Sequence[str],
+    by: str = "type",
 ) -> Dict[str, Any]:
     """Score predictions against ground truth, per question type and overall.
 
+    ``by="type"`` keys on the eight native CDVQA types; ``by="group"`` keys
+    on the five rule families from CLAUDE.md section 2.
+
     ``accuracy`` is None for a question type with no samples -- reporting 0.0
     would be a measurement that never happened, and would drag the average
-    down by a fifth per empty type.
+    down by one slot per empty type.
     """
     if len(samples) != len(predictions):
         raise ValueError(
             f"got {len(predictions)} predictions for {len(samples)} samples; "
             "a length mismatch would silently score a subset"
         )
+    if by not in ("type", "group"):
+        raise ValueError(f"by must be 'type' or 'group'; got {by!r}")
 
-    totals: Dict[str, int] = {t: 0 for t in QUESTION_TYPES}
-    hits: Dict[str, int] = {t: 0 for t in QUESTION_TYPES}
+    universe = QUESTION_TYPES if by == "type" else CDVQA_GROUPS
+    key_of = (lambda s: s.question_type) if by == "type" else (
+        lambda s: group_of(s.question_type)
+    )
+
+    totals: Dict[str, int] = {t: 0 for t in universe}
+    hits: Dict[str, int] = {t: 0 for t in universe}
 
     for sample, prediction in zip(samples, predictions):
-        question_type = sample.question_type
+        question_type = key_of(sample)
         totals.setdefault(question_type, 0)
         hits.setdefault(question_type, 0)
         totals[question_type] += 1
@@ -299,7 +409,7 @@ def evaluate(
 def format_report(report: Dict[str, Any], title: str) -> str:
     """Render a report in the paper's table shape, for the terminal."""
     lines = [title, "-" * len(title)]
-    for question_type in QUESTION_TYPES:
+    for question_type in report["per_type"]:
         entry = report["per_type"].get(question_type, {"n": 0, "accuracy": None})
         accuracy = entry["accuracy"]
         rendered = (
@@ -326,8 +436,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate a predictor on the official CDVQA test split."
     )
-    parser.add_argument("--train", required=True, help="training split JSON")
-    parser.add_argument("--test", required=True, help="test split JSON")
+    parser.add_argument(
+        "--root", help="directory holding the official CDVQA JSON files"
+    )
+    parser.add_argument("--train", help="training split JSON (flat format)")
+    parser.add_argument("--test", help="test split JSON (flat format)")
+    parser.add_argument(
+        "--train-split", default="Train", help="official split name to fit on"
+    )
+    parser.add_argument(
+        "--test-split",
+        default="Test",
+        help="official split name to score. Test and Test2 cover the same 968 "
+             "scenes with different question sets, so the choice is explicit.",
+    )
     parser.add_argument(
         "--baseline",
         choices=("majority", "per_type_majority"),
@@ -341,8 +463,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    train = load_split(args.train)
-    test = load_split(args.test)
+    if args.root:
+        train = load_cdvqa_split(args.root, args.train_split)
+        test = load_cdvqa_split(args.root, args.test_split)
+    elif args.train and args.test:
+        train = load_split(args.train)
+        test = load_split(args.test)
+    else:
+        parser.error("pass --root, or both --train and --test")
     assert_no_pair_leakage(train, test)
 
     fit = (
@@ -352,16 +480,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     predict = fit(train)
     predictions = [predict(sample) for sample in test]
-    report = evaluate(test, predictions)
+    report = evaluate(test, predictions, by="type")
+    grouped = evaluate(test, predictions, by="group")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:
         json.dump(
             {
                 "baseline": args.baseline,
-                "train_split": args.train,
-                "test_split": args.test,
+                "train_split": args.train_split if args.root else args.train,
+                "test_split": args.test_split if args.root else args.test,
                 "report": report,
+                "report_grouped": grouped,
                 "predictions": [
                     {**asdict(sample), "prediction": prediction}
                     for sample, prediction in zip(test, predictions)
@@ -371,7 +501,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             indent=2,
         )
 
-    print(format_report(report, f"CDVQA -- baseline: {args.baseline}"))
+    print(format_report(report, f"CDVQA native types -- baseline: {args.baseline}"))
+    print()
+    print(format_report(grouped, "CDVQA rule families (CLAUDE.md section 2)"))
     print(f"\nRaw predictions written to {args.out}")
     return 0
 

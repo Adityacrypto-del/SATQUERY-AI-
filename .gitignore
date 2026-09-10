@@ -32,3 +32,12 @@ runs/
 
 # macOS
 .DS_Store
+
+# Dataset archives and extracted payloads (multi-GB; never committed)
+*.zip
+*.rar
+*.7z
+datasets/SECOND*/
+datasets/second*/
+datasets/CDVQA*/
+datasets/cdvqa*/
