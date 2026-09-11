@@ -26,7 +26,7 @@ import numpy as np
 from tools.change_analysis.io import RSImage
 
 __all__ = [
-    "CO_REGISTRATION_FAIL_PX",
+    "CO_REGISTRATION_MIN_PSR",
     "CO_REGISTRATION_WARN_PX",
     "Check",
     "PairReport",
@@ -37,10 +37,24 @@ __all__ = [
 
 # Townshend (1992) and Dai & Khorram (1998): registration accuracy better
 # than 0.2 pixels is required to keep change-detection error under 10%.
-# These are literature-derived, not tuned, and are named constants so the
-# provenance travels with the number.
+# Literature-derived, not tuned.
+#
+# IMPORTANT -- what this estimator can and cannot support. Phase correlation
+# on a bi-temporal pair measures *apparent* displacement, which mixes true
+# misregistration with genuine land-cover change. Measured on 40 real,
+# genuinely co-registered SECOND pairs: median apparent shift 6.20 px, with
+# 90% above 1 px. So a hard failure at 1 px would reject roughly nine in ten
+# valid benchmark pairs. The literature figures describe true registration
+# error; this estimator does not isolate it. Co-registration is therefore
+# reported as ADVISORY -- it can warn, never fail.
 CO_REGISTRATION_WARN_PX = 0.2
-CO_REGISTRATION_FAIL_PX = 1.0
+
+# Peak-to-sidelobe ratio floor below which the correlation peak is not
+# distinguishable from the surface and the shift estimate means nothing.
+# Derived, not chosen: synthetic pairs with no shared structure scored
+# 4.77-6.55, while 40 real SECOND pairs scored 6.84 at minimum (p5 = 7.01).
+# 6.7 sits in the gap between those two measured populations.
+CO_REGISTRATION_MIN_PSR = 6.7
 
 # Ground sample distances rarely match to the digit across sensors; beyond
 # this ratio the pair is not comparable without resampling.
@@ -106,7 +120,9 @@ class PairReport:
         }
 
 
-def estimate_shift_px(a: np.ndarray, b: np.ndarray) -> float:
+def estimate_shift_px(
+    a: np.ndarray, b: np.ndarray, return_confidence: bool = False
+):
     """Residual translation between two planes, in pixels, via phase correlation.
 
     Phase correlation works in the Fourier domain, so it is insensitive to
@@ -119,7 +135,7 @@ def estimate_shift_px(a: np.ndarray, b: np.ndarray) -> float:
     a = a - a.mean()
     b = b - b.mean()
     if not np.any(a) or not np.any(b):
-        return 0.0
+        return (0.0, 0.0) if return_confidence else 0.0
 
     # Hann window suppresses the edge discontinuity that would otherwise
     # dominate the spectrum of a non-periodic image.
@@ -137,28 +153,54 @@ def estimate_shift_px(a: np.ndarray, b: np.ndarray) -> float:
         size = correlation.shape[axis]
         # Wrap: a peak near the end of the axis is a negative shift.
         shifts.append(index - size if index > size // 2 else index)
-    return float(np.hypot(*shifts))
+    distance = float(np.hypot(*shifts))
+    if not return_confidence:
+        return distance
+    spread = float(correlation.std())
+    psr = (
+        (float(correlation.max()) - float(correlation.mean())) / spread
+        if spread > 0 else 0.0
+    )
+    return distance, psr
 
 
 def _co_registration_check(t1: RSImage, t2: RSImage) -> Check:
-    shift = estimate_shift_px(t1.array[0], t2.array[0])
-    if shift >= CO_REGISTRATION_FAIL_PX:
-        severity = Severity.FAIL
-        detail = (
-            f"residual shift {shift:.2f} px exceeds the {CO_REGISTRATION_FAIL_PX} px "
-            "hard limit; co-register the pair before analysis"
+    """Advisory co-registration estimate. Warns, never fails.
+
+    See CO_REGISTRATION_WARN_PX for why: the estimate conflates true
+    misregistration with real land-cover change, so a large value is a
+    reason to prefer region-level statistics, not grounds to reject a pair.
+    """
+    # Average across bands rather than taking band 0. Blue is often the
+    # weakest, noisiest band, and averaging raises the shared-structure
+    # signal the correlation depends on.
+    a = np.nanmean(t1.array, axis=0)
+    b = np.nanmean(t2.array, axis=0)
+    shift, psr = estimate_shift_px(a, b, return_confidence=True)
+    if psr < CO_REGISTRATION_MIN_PSR:
+        return Check(
+            "co_registration", Severity.NOT_APPLICABLE,
+            f"correlation peak is indistinct (PSR {psr:.2f} < "
+            f"{CO_REGISTRATION_MIN_PSR}); the images share too little structure "
+            "for a shift estimate to mean anything, so none is reported",
+            value=None,
         )
-    elif shift > CO_REGISTRATION_WARN_PX:
-        severity = Severity.WARN
-        detail = (
-            f"residual shift {shift:.2f} px exceeds {CO_REGISTRATION_WARN_PX} px. "
-            "Literature (Townshend 1992; Dai & Khorram 1998) puts change-detection "
-            "error above 10% beyond this; prefer region-level statistics"
+    if shift > CO_REGISTRATION_WARN_PX:
+        return Check(
+            "co_registration", Severity.WARN,
+            f"apparent shift {shift:.2f} px (PSR {psr:.2f}) exceeds "
+            f"{CO_REGISTRATION_WARN_PX} px. Literature (Townshend 1992; Dai & "
+            "Khorram 1998) puts change-detection error above 10% beyond this, "
+            "but this estimate also absorbs genuine land-cover change and "
+            "cannot separate the two -- prefer region-level statistics",
+            value=shift,
         )
-    else:
-        severity = Severity.PASS
-        detail = f"residual shift {shift:.2f} px is within {CO_REGISTRATION_WARN_PX} px"
-    return Check("co_registration", severity, detail, value=shift)
+    return Check(
+        "co_registration", Severity.PASS,
+        f"apparent shift {shift:.2f} px (PSR {psr:.2f}) is within "
+        f"{CO_REGISTRATION_WARN_PX} px",
+        value=shift,
+    )
 
 
 def _extents_overlap(t1: RSImage, t2: RSImage) -> bool:

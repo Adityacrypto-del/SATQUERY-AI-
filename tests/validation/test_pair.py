@@ -15,7 +15,7 @@ from rasterio.crs import CRS
 
 from tools.change_analysis.io import RSImage, load_rsimage
 from tools.validation.pair import (
-    CO_REGISTRATION_FAIL_PX,
+    CO_REGISTRATION_MIN_PSR,
     CO_REGISTRATION_WARN_PX,
     Severity,
     validate_pair,
@@ -173,16 +173,39 @@ def test_aligned_pair_reports_subpixel_shift(tmp_path):
     assert check.value < CO_REGISTRATION_WARN_PX
 
 
-def test_large_shift_fails_registration(tmp_path):
+def test_large_shift_warns_but_never_fails(tmp_path):
+    """Advisory only. Phase correlation on a bi-temporal pair mixes true
+    misregistration with real land-cover change and cannot separate them.
+    Measured on 40 genuinely co-registered SECOND pairs: median apparent
+    shift 6.20 px, 90% above 1 px -- a hard fail would reject nine in ten
+    valid benchmark pairs."""
     t1 = load_rsimage(_write(tmp_path / "a.tif", _textured(64, 64, seed=1)))
     t2 = load_rsimage(
         _write(tmp_path / "b.tif", _textured(64, 64, shift_cols=5, seed=1))
     )
 
+    report = validate_pair(t1, t2)
+    check = report.check("co_registration")
+
+    assert check.severity is Severity.WARN
+    assert check.severity is not Severity.FAIL
+    assert report.ok, "a large apparent shift must not reject the pair"
+
+
+def test_structureless_pair_reports_no_estimate_rather_than_a_random_one(tmp_path):
+    """With no shared structure the correlation argmax is noise. Reporting it
+    as a confident shift is exactly the confident-wrong-answer failure."""
+    rng = np.random.default_rng(0)
+    flat = np.full((1, 64, 64), 0.04, dtype=np.float32)
+    a = flat + rng.normal(0, 0.004, (1, 64, 64)).astype(np.float32)
+    b = flat + rng.normal(0, 0.004, (1, 64, 64)).astype(np.float32)
+    t1 = load_rsimage(_write(tmp_path / "a.tif", a))
+    t2 = load_rsimage(_write(tmp_path / "b.tif", b))
+
     check = validate_pair(t1, t2).check("co_registration")
 
-    assert check.value >= CO_REGISTRATION_FAIL_PX
-    assert check.severity is Severity.FAIL
+    assert check.severity is Severity.NOT_APPLICABLE
+    assert check.value is None
 
 
 # --------------------------------------------------------------------------
