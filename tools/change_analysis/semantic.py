@@ -87,9 +87,22 @@ class SemanticSegmenter:
             )
         self.epoch = payload.get("epoch")
         self.val_report = payload.get("val_report") or {}
+        # Measured confidence calibration, if one sits beside the checkpoint.
+        # Absent is fine: the pipeline then falls back to the per-type prior
+        # and says so in the basis.
+        self.calibration = None
+        calibration_path = os.path.join(
+            os.path.dirname(checkpoint) or ".", "confidence_calibration.json"
+        )
+        if os.path.exists(calibration_path):
+            import json
+
+            with open(calibration_path, encoding="utf-8") as handle:
+                self.calibration = json.load(handle)
         self._explicit_range = value_range
         self._last_scaling: Optional[str] = None
         self._last_band_selection: Optional[str] = None
+        self._last_margin: Optional[float] = None
 
         from segmentation.train import SharedChangeNet, SiameseChangeNet
 
@@ -120,6 +133,8 @@ class SemanticSegmenter:
             "val_average_accuracy": self.val_report.get("average_accuracy"),
             "value_scaling": self._last_scaling,
             "band_selection": self._last_band_selection,
+            "softmax_margin": self._last_margin,
+            "calibrated": self.calibration is not None,
         }
 
     # -- band handling ----------------------------------------------------
@@ -207,8 +222,40 @@ class SemanticSegmenter:
         with torch.no_grad():
             use_amp = self.device.type == "cuda"
             with torch.amp.autocast("cuda", enabled=use_amp):
+                outputs = self.model(tensor)
                 p1, p2 = self.model.predict(tensor)
 
         s1 = p1[0].to(torch.int64).cpu().numpy()[:height, :width]
         s2 = p2[0].to(torch.int64).cpu().numpy()[:height, :width]
+        self._last_margin = self._margin(outputs)
         return s1, s2
+
+    def _margin(self, outputs) -> float:
+        """Mean softmax top-1 minus top-2 margin over every decision made.
+
+        This is how *separated* the model's choices were on this particular
+        image -- near zero means it was nearly a coin flip between two
+        classes at most pixels, large means it was decisive. It is a
+        per-instance quantity, which the checkpoint's per-question-type
+        accuracy is not: that is the same number for every image.
+
+        The margin is not itself a probability of being correct, and is never
+        reported as one. ``segmentation/calibrate_confidence.py`` measures
+        what accuracy each margin band actually achieved on Val, and that
+        measured accuracy is what gets reported. Averaging across whichever
+        heads the architecture has keeps the number comparable between the
+        two- decoder and shared models, both of which reach the same rules.
+        """
+        torch = self._torch
+        tensors = outputs if isinstance(outputs, (tuple, list)) else (outputs,)
+        margins = []
+        for logits in tensors:
+            probabilities = torch.softmax(logits.float(), dim=1)
+            top = probabilities.topk(2, dim=1).values
+            margins.append((top[:, 0] - top[:, 1]).mean())
+        return float(torch.stack(margins).mean().item())
+
+    @property
+    def last_margin(self) -> Optional[float]:
+        """Softmax margin from the most recent :meth:`predict` call."""
+        return getattr(self, "_last_margin", None)

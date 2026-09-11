@@ -124,6 +124,14 @@ def main(argv=None) -> int:
             # CDVQA has no token for a combined answer, so the honest output
             # is one answer per class and a null single answer -- not a token
             # picked to fill the slot.
+            # The fabrication trap for the SAR path: a question a rule *can*
+            # answer, asked of input the producer cannot supply class maps
+            # for. Answering "no" here would be a confident falsehood.
+            dict(case_id="C8_sar_class_question_must_refuse",
+                 t1_path=f"{fx}/SYNTHETIC_sar_t1.tif",
+                 t2_path=f"{fx}/SYNTHETIC_sar_t2.tif",
+                 query=queries["q8_sar_class_question"], modality="sar",
+                 checkpoint=args.checkpoint),
             dict(case_id="C7_second_held_out_compound",
                  t1_path=f"{spare}/im1/{safe[1]}", t2_path=f"{spare}/im2/{safe[1]}",
                  query=queries["q7_compound"], checkpoint=args.checkpoint),

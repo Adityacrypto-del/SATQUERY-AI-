@@ -159,6 +159,27 @@ class BiTemporalPipeline:
             f"measured val accuracy for {question_type or 'average'} "
             f"= {measured:.4f}"
         )
+
+        # Per-instance refinement, where it has been measured. The per-type
+        # accuracy above is a prior: identical for every image asking that
+        # question. The softmax margin says how separated this model's
+        # decisions were on *this* image, and the calibration file records
+        # what accuracy each (question type, margin band) cell actually
+        # achieved on Val. Pooled across types the margin looks worthless --
+        # 2.49 points between the extreme bands -- but within a type it
+        # spans 13.17 points on average and 44.85 for change_ratio, because
+        # the types have very different base rates and pooling hides it.
+        # The number reported is still a measurement, never the margin
+        # itself: a margin is not a probability of being correct.
+        refined = self._calibrated_accuracy(question_type)
+        if refined is not None:
+            accuracy, low, high, n = refined
+            basis = (
+                f"measured val accuracy for {question_type} at softmax margin "
+                f"in ({low:.4f}, {high:.4f}] = {accuracy:.4f} (n={n}); "
+                f"per-type prior was {measured:.4f}"
+            )
+            measured = accuracy
         if validation is not None and validation.warnings:
             # Reported, never applied. An earlier version reduced confidence
             # by 10% per warning, which was a placeholder in both magnitude
@@ -176,6 +197,32 @@ class BiTemporalPipeline:
                 f"not applied to the number (no calibrated basis)"
             )
         return float(max(0.0, min(1.0, measured))), basis
+
+    def _calibrated_accuracy(self, question_type):
+        """Measured accuracy for this question type at this image's margin.
+
+        Returns ``(accuracy, bin_low, bin_high, n)``, or None when there is no
+        calibration file, no margin from the last forward pass, or the cell
+        holds too few questions to say anything -- in which case the caller
+        keeps the per-type prior rather than reporting a thin measurement.
+        """
+        segmenter = self.segmenter
+        calibration = getattr(segmenter, "calibration", None)
+        margin = getattr(segmenter, "last_margin", None)
+        if not calibration or margin is None or not question_type:
+            return None
+        cells = (calibration.get("per_type_bins") or {}).get(question_type)
+        if not cells:
+            return None
+        for cell in cells:
+            if cell["low"] < margin <= cell["high"]:
+                if not cell.get("usable") or cell.get("accuracy") is None:
+                    return None
+                return (
+                    float(cell["accuracy"]), float(cell["low"]),
+                    float(cell["high"]), int(cell["n"]),
+                )
+        return None
 
     # -- main -------------------------------------------------------------
 
@@ -221,6 +268,7 @@ class BiTemporalPipeline:
 
         s_t1 = s_t2 = None
         detection = None
+        producer_b_trace = None
         target_class = parse_question(query)["target"] if query else None
 
         # 3 -- change extraction
@@ -257,6 +305,40 @@ class BiTemporalPipeline:
                     f"operator={detection.operator}, threshold="
                     f"{detection.threshold}, changed pixels={int(mask.sum())}"
                 )
+
+            # 3b -- Producer B. The index detector above says *whether* a
+            # pixel changed; the CDVQA rules also need to know *what* it was
+            # and became. For multispectral optical the spectral indices can
+            # supply that. For SAR they cannot -- backscatter carries no
+            # mapping to land cover -- and the producer returns no maps at
+            # all rather than empty ones, because an all-zero map reads to
+            # every rule as "nothing changed" and would be answered with
+            # full confidence.
+            with trace.stage(
+                "index_classification",
+                "tools.change_analysis.index_classifier.classify_pair",
+                "Give the rules class maps where physics can supply them, "
+                "and refuse where it cannot rather than returning zeros.",
+                {"modality": t1.modality},
+            ) as st:
+                from .index_classifier import classify_pair
+
+                classification = classify_pair(t1, t2)
+                producer_b_trace = classification.trace
+                if classification.semantic_available:
+                    s_t1, s_t2 = classification.require_semantic()
+                    s_t1 = s_t1.astype(np.int64)
+                    s_t2 = s_t2.astype(np.int64)
+                    st.observation = (
+                        f"semantic maps from {classification.trace['indices']}; "
+                        f"precedence {' > '.join(classification.trace['precedence'])}"
+                    )
+                else:
+                    st.observation = (
+                        "no semantic maps: "
+                        f"{classification.trace.get('limitation', 'unsupported input')}. "
+                        "CDVQA rules will not be applied."
+                    )
 
         # 4 -- morphology
         with trace.stage(
@@ -401,6 +483,7 @@ class BiTemporalPipeline:
             "region_summary": summary_stats,
             "overlays": overlay_paths,
             "segmenter": self.segmenter.metadata() if route == "semantic" else None,
+            "index_classifier": producer_b_trace,
         }
         return result
 

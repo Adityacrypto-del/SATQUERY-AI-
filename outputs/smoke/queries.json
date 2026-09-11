@@ -35,6 +35,11 @@
       "id": "q7_compound",
       "text": "What did low vegetation and water change into?",
       "checks": "names two classes; must answer once per class and must NOT collapse them into a single one of the 19 tokens"
+    },
+    {
+      "id": "q8_sar_class_question",
+      "text": "Have the areas of buildings changed?",
+      "checks": "asked of a SAR pair, where backscatter carries no land-cover mapping. Must REFUSE -- answer null -- not answer 'no'. An all-zero semantic map would read to the rules as 'nothing changed' and be answered with full confidence."
     }
   ]
 }
