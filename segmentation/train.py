@@ -135,6 +135,163 @@ class SiameseChangeNet(nn.Module):
             outputs.append(head(y))
         return outputs[0], outputs[1]
 
+    @torch.no_grad()
+    def predict(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Composed 7-class maps for both dates.
+
+        Each head decides class 0 ("unchanged") independently, so the two can
+        contradict each other. That contradiction is impossible in ground
+        truth and is what SharedChangeNet exists to remove.
+        """
+        o1, o2 = self(x)
+        return o1.argmax(1), o2.argmax(1)
+
+
+class SharedChangeNet(nn.Module):
+    """Shared binary change head + two 6-way class heads.
+
+    Run 1 and Run 2 both showed the two-decoder design cannot keep its heads
+    consistent: head disagreement plateaued at 2.96% and 5.92% respectively,
+    with no convergence trend in either. In ground truth a pixel is unchanged
+    in both maps or classed in both -- agreement is exactly 100% across all
+    4,662 SECOND pairs -- so any disagreement is a pure model artefact the
+    rules have no defined behaviour for.
+
+    Here one head decides changed-vs-unchanged once, for both dates, so
+    disagreement is structurally impossible rather than merely discouraged --
+    verified exactly 0.000% by construction, not by training.
+
+    That head reads the two decoder streams as (sum, absolute difference).
+    This is even-handed between the streams and, more usefully, the
+    |d1 - d2| term encodes "how far apart are the two dates here", which is
+    the change signal itself. Note it is *not* invariant to swapping the
+    input dates: the two decoders carry different weights, so swapping
+    routes each date through the other decoder. Full swap-invariance would
+    need a single shared decoder; it is not required here because t1 and t2
+    have fixed before/after meaning and are never fed reversed.
+
+    This also fixes what Run 2 got wrong. The 79/21 imbalance lives entirely
+    in the binary decision; among *changed* pixels the six classes are far
+    more balanced. So the binary head is weighted and the class heads are
+    not. Run 2 applied one weighting scheme to both decisions at once, which
+    made the model over-predict rare classes everywhere -- sprinkling tiny
+    spurious regions that then won smallest_change's argmin and inflated
+    change_ratio's total.
+    """
+
+    def __init__(
+        self,
+        n_land_cover: int = 6,
+        pretrained: bool = True,
+        unchanged_logit: bool = False,
+    ):
+        super().__init__()
+        self.n_land_cover = n_land_cover
+        # Run 5. An optional seventh output on each class head, carrying
+        # "unchanged". It exists only so the class heads can be supervised on
+        # unchanged pixels -- SECOND gives those pixels no land-cover label,
+        # so there is otherwise nothing to put on the right-hand side. It is
+        # never read by `predict`, which argmaxes over the six land-cover
+        # channels, so the change head still owns the changed/unchanged
+        # decision outright and disagreement stays impossible.
+        self.unchanged_logit = unchanged_logit
+        from torchvision.models import ResNet18_Weights, resnet18
+
+        weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        net = resnet18(weights=weights)
+
+        self.stem = nn.Sequential(net.conv1, net.bn1, net.relu)
+        self.pool = net.maxpool
+        self.layer1 = net.layer1
+        self.layer2 = net.layer2
+        self.layer3 = net.layer3
+        self.layer4 = net.layer4
+
+        self.decoders = nn.ModuleList()
+        for _ in range(2):
+            self.decoders.append(
+                nn.ModuleList([
+                    _DecoderBlock(1024, 512, 256),
+                    _DecoderBlock(256, 256, 128),
+                    _DecoderBlock(128, 128, 64),
+                    _DecoderBlock(64, 128, 64),
+                ])
+            )
+        # One change decision for both dates, from an order-invariant
+        # combination of the two streams.
+        self.change_head = nn.Conv2d(128, 2, 1)
+        # Land cover given that the pixel changed. No class 0 here -- that
+        # case is owned by the change head and cannot be contradicted.
+        self.class_heads = nn.ModuleList(
+            [nn.Conv2d(64, n_land_cover + int(unchanged_logit), 1)
+             for _ in range(2)]
+        )
+
+    def _encode(self, x: torch.Tensor):
+        s0 = self.stem(x)
+        s1 = self.layer1(self.pool(s0))
+        s2 = self.layer2(s1)
+        s3 = self.layer3(s2)
+        s4 = self.layer4(s3)
+        return s0, s1, s2, s3, s4
+
+    def _decode(self, decoder, own, other) -> torch.Tensor:
+        """Decode to half resolution. Heads run here, not at full res.
+
+        Combining two 64-channel streams into 128 channels at full 512x512
+        costs three extra full-resolution activations held for backward. The
+        first pilot of this architecture peaked at 6,333 MiB against 6,140
+        available, spilled to system RAM, and ran 22x slower than Run 1
+        (9.2 s/step vs 0.41). Running the heads at half resolution and
+        upsampling the 2- and 6-channel *logits* instead is four times
+        cheaper and costs nothing measurable in accuracy.
+        """
+        y = torch.cat([own[4], own[4] - other[4]], dim=1)
+        skips = [
+            torch.cat([own[3], own[3] - other[3]], dim=1),
+            torch.cat([own[2], own[2] - other[2]], dim=1),
+            torch.cat([own[1], own[1] - other[1]], dim=1),
+            torch.cat([own[0], own[0] - other[0]], dim=1),
+        ]
+        for block, skip in zip(decoder, skips):
+            y = block(y, skip)
+        return y
+
+    @staticmethod
+    def _to_full(logits: torch.Tensor) -> torch.Tensor:
+        return F.interpolate(
+            logits, scale_factor=2, mode="bilinear", align_corners=False
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Returns ``(change_logits, class1_logits, class2_logits)``, full res."""
+        a = self._encode(x[:, :3])
+        b = self._encode(x[:, 3:])
+        d1 = self._decode(self.decoders[0], a, b)
+        d2 = self._decode(self.decoders[1], b, a)
+
+        # Even-handed readout of both streams; |d1 - d2| is the change signal.
+        combined = torch.cat([d1 + d2, (d1 - d2).abs()], dim=1)
+        return (
+            self._to_full(self.change_head(combined)),
+            self._to_full(self.class_heads[0](d1)),
+            self._to_full(self.class_heads[1](d2)),
+        )
+
+    @torch.no_grad()
+    def predict(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Composed 7-class maps. Both dates share one change mask."""
+        change_logits, c1, c2 = self(x)
+        changed = change_logits.argmax(1) == 1
+        zero = torch.zeros_like(changed, dtype=torch.long)
+        # Land-cover channels only. With the Run 5 unchanged logit present,
+        # argmaxing over all seven would decode the seventh as class 7 --
+        # outside the palette and outside every rule in cdvqa.py.
+        n = self.n_land_cover
+        p1 = torch.where(changed, c1[:, :n].argmax(1) + 1, zero)
+        p2 = torch.where(changed, c2[:, :n].argmax(1) + 1, zero)
+        return p1, p2
+
 
 # --------------------------------------------------------------------------
 # Metrics
@@ -175,8 +332,31 @@ class TrainConfig:
     workers: int = 4
     amp: bool = True
     class_weight_power: float = 0.0
+    arch: str = "siamese"          # "siamese" (Run 1/2) or "shared" (Run 3+)
+    change_weight_power: float = 1.0
+    # Run 5's one knob. Run 4 left this off and its class heads saw only the
+    # 18.65% of pixels that changed.
+    unchanged_class_supervision: bool = False
     out_dir: str = "outputs/segmentation"
     seed: int = 0
+
+
+def _build_model(config: TrainConfig) -> nn.Module:
+    if config.arch == "shared":
+        return SharedChangeNet(
+            unchanged_logit=config.unchanged_class_supervision
+        )
+    if config.arch == "siamese":
+        return SiameseChangeNet()
+    raise ValueError(f"arch must be 'siamese' or 'shared'; got {config.arch!r}")
+
+
+def _compute_loss(model, criterion, config: TrainConfig, x, y1, y2):
+    outputs = model(x)
+    if config.arch == "shared":
+        return criterion(outputs, y1, y2)
+    o1, o2 = outputs
+    return criterion(o1, y1) + criterion(o2, y2)
 
 
 def _build_loaders(config: TrainConfig, pilot: bool = False):
@@ -211,7 +391,134 @@ def _build_loaders(config: TrainConfig, pilot: bool = False):
     return train_loader, val_loader, train_scenes, val_scenes
 
 
+class SharedChangeLoss(nn.Module):
+    """Two losses for two decisions with different imbalance profiles.
+
+    The binary change head carries the real 79/21 imbalance, so it is
+    weighted by inverse frequency. The class heads see only pixels that
+    actually changed, where the six land-cover classes are far closer to
+    balanced, so they are left unweighted. Run 2's failure was applying one
+    weighting scheme across both at once.
+
+    Class loss is masked to changed ground-truth pixels via ignore_index:
+    an unchanged pixel has no land-cover label to predict, so scoring the
+    class heads there would be supervising noise.
+    """
+
+    def __init__(
+        self,
+        change_weight: torch.Tensor,
+        unchanged_sample_rate: float = 0.0,
+        n_land_cover: int = 6,
+    ):
+        super().__init__()
+        self.change_loss = nn.CrossEntropyLoss(weight=change_weight)
+        self.class_loss = nn.CrossEntropyLoss(ignore_index=-100)
+        # Run 5's single change. At 0.0 this is Run 4 exactly: unchanged
+        # pixels are ignored by the class heads. Above 0.0 that fraction of
+        # them is labelled with the unchanged index instead, restoring the
+        # supervision volume masking removed. The rate is measured by
+        # `unchanged_sample_rate`, never chosen.
+        self.unchanged_sample_rate = float(unchanged_sample_rate)
+        self.n_land_cover = n_land_cover
+
+    def class_targets(self, target: torch.Tensor) -> torch.Tensor:
+        """Shift 1..6 -> 0..5; unchanged pixels ignored, or sampled in."""
+        shifted = torch.where(
+            target != 0, target - 1, torch.full_like(target, -100)
+        )
+        if self.unchanged_sample_rate <= 0.0:
+            return shifted
+        keep = torch.rand(target.shape, device=target.device) < self.unchanged_sample_rate
+        return torch.where(
+            (target == 0) & keep,
+            torch.full_like(target, self.n_land_cover),
+            shifted,
+        )
+
+    def forward(self, outputs, y1: torch.Tensor, y2: torch.Tensor):
+        change_logits, c1, c2 = outputs
+        if self.unchanged_sample_rate > 0.0 and c1.shape[1] <= self.n_land_cover:
+            raise ValueError(
+                f"unchanged-pixel supervision needs an unchanged logit: the "
+                f"class heads are {c1.shape[1]} wide, which leaves no channel "
+                f"for it. Build the model with unchanged_logit=True."
+            )
+        changed = (y1 != 0).long()
+        loss = self.change_loss(change_logits, changed)
+        for logits, target in ((c1, y1), (c2, y2)):
+            shifted = self.class_targets(target)
+            if (shifted != -100).any():
+                loss = loss + self.class_loss(logits, shifted)
+        return loss
+
+
+def unchanged_sample_rate(counts: Dict[int, int]) -> float:
+    """Fraction of unchanged pixels to supervise the class heads on.
+
+    Derived, not chosen (HARD RULE 4). The rate is set so the sampled
+    unchanged pixels arrive at the same expected frequency as an average
+    land-cover class among changed pixels::
+
+        p = (changed / n_land_cover) / unchanged
+
+    That is what makes this one knob rather than two: it restores the
+    supervision volume masking removed *and* leaves the seven-way problem
+    balanced, so no additional class weighting is needed or wanted. On the
+    measured SECOND training distribution (changed fraction 0.1865) this
+    comes to roughly 0.038.
+    """
+    unchanged = counts.get(0, 0)
+    changed = sum(v for k, v in counts.items() if k != 0)
+    if unchanged <= 0 or changed <= 0:
+        return 0.0
+    n_land_cover = max(len([k for k in counts if k != 0]), 1)
+    return min((changed / n_land_cover) / unchanged, 1.0)
+
+
+def _train_counts(config: TrainConfig) -> Dict[int, int]:
+    """Measured per-class pixel counts over the training split."""
+    from segmentation.dataset import class_pixel_counts
+
+    scenes = cdvqa_split_scenes(config.cdvqa_root, "Train")
+    return class_pixel_counts(config.second_root, scenes, limit=200)
+
+
+def _change_weight(config: TrainConfig, device, counts=None) -> torch.Tensor:
+    """Inverse-frequency weight for the binary changed/unchanged decision."""
+    if counts is None:
+        counts = _train_counts(config)
+    unchanged = counts.get(0, 0)
+    changed = sum(v for k, v in counts.items() if k != 0)
+    total = unchanged + changed
+    if unchanged == 0 or changed == 0:
+        return torch.ones(2, dtype=torch.float32, device=device)
+    weights = torch.tensor(
+        [(total / unchanged) ** config.change_weight_power,
+         (total / changed) ** config.change_weight_power],
+        dtype=torch.float32, device=device,
+    )
+    weights = weights / weights.mean()
+    print(f"  binary change weights (unchanged, changed): "
+          f"{weights[0]:.3f}, {weights[1]:.3f}  "
+          f"[measured changed fraction {changed / total:.3f}]", flush=True)
+    return weights
+
+
 def _criterion(config: TrainConfig, device) -> nn.Module:
+    if config.arch == "shared":
+        counts = _train_counts(config)
+        rate = (
+            unchanged_sample_rate(counts)
+            if config.unchanged_class_supervision else 0.0
+        )
+        if rate:
+            print(f"  unchanged-pixel class supervision: rate {rate:.4f} "
+                  f"(derived, balances class 0 against the mean changed class)",
+                  flush=True)
+        return SharedChangeLoss(
+            _change_weight(config, device, counts), unchanged_sample_rate=rate
+        )
     if config.class_weight_power <= 0:
         return nn.CrossEntropyLoss()
     # Inverse-frequency weights, softened by an exponent so the rare classes
@@ -237,9 +544,9 @@ def evaluate(model, loader, device, amp: bool) -> Dict[str, float]:
     for x, y1, y2 in loader:
         x, y1, y2 = x.to(device, non_blocking=True), y1.to(device), y2.to(device)
         with torch.amp.autocast("cuda", enabled=amp):
-            o1, o2 = model(x)
-        matrix += confusion(o1.argmax(1), y1, N_CLASSES)
-        matrix += confusion(o2.argmax(1), y2, N_CLASSES)
+            p1, p2 = model.predict(x)
+        matrix += confusion(p1, y1, N_CLASSES)
+        matrix += confusion(p2, y2, N_CLASSES)
     miou, per_class = miou_from_confusion(matrix.cpu())
     correct = matrix.diag().sum().item()
     return {
@@ -258,7 +565,7 @@ def run_pilot(config: TrainConfig, steps: int = 50) -> Dict[str, object]:
     train_loader, _, _, _ = _build_loaders(config, pilot=True)
     full_train_scenes = len(cdvqa_split_scenes(config.cdvqa_root, "Train"))
 
-    model = SiameseChangeNet().to(device)
+    model = _build_model(config).to(device)
     optimiser = torch.optim.AdamW(
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
     )
@@ -279,8 +586,7 @@ def run_pilot(config: TrainConfig, steps: int = 50) -> Dict[str, object]:
             x = x.to(device, non_blocking=True)
             y1, y2 = y1.to(device, non_blocking=True), y2.to(device, non_blocking=True)
             with torch.amp.autocast("cuda", enabled=config.amp):
-                o1, o2 = model(x)
-                loss = criterion(o1, y1) + criterion(o2, y2)
+                loss = _compute_loss(model, criterion, config, x, y1, y2)
             scaler.scale(loss / config.accum_steps).backward()
             if (done + 1) % config.accum_steps == 0:
                 scaler.step(optimiser)
@@ -336,7 +642,7 @@ def train(config: TrainConfig) -> Dict[str, object]:
         config.cdvqa_root, config.second_root, "Val", scenes=val_scenes
     )
 
-    model = SiameseChangeNet().to(device)
+    model = _build_model(config).to(device)
     optimiser = torch.optim.AdamW(
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
     )
@@ -355,8 +661,7 @@ def train(config: TrainConfig) -> Dict[str, object]:
             x = x.to(device, non_blocking=True)
             y1, y2 = y1.to(device, non_blocking=True), y2.to(device, non_blocking=True)
             with torch.amp.autocast("cuda", enabled=config.amp):
-                o1, o2 = model(x)
-                loss = criterion(o1, y1) + criterion(o2, y2)
+                loss = _compute_loss(model, criterion, config, x, y1, y2)
             scaler.scale(loss / config.accum_steps).backward()
             if (step + 1) % config.accum_steps == 0:
                 scaler.step(optimiser)
@@ -425,6 +730,14 @@ def main(argv=None) -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--class-weight-power", type=float, default=0.0)
+    parser.add_argument("--arch", choices=("siamese", "shared"), default="siamese")
+    parser.add_argument("--change-weight-power", type=float, default=1.0,
+                        help="inverse-frequency exponent for the binary change "
+                             "head (shared arch only); 1.0 = full correction")
+    parser.add_argument("--unchanged-class-supervision", action="store_true",
+                        help="shared arch only: give the class heads a seventh "
+                             "'unchanged' logit and supervise it on a derived "
+                             "fraction of unchanged pixels (Run 5)")
     parser.add_argument("--out-dir", default="outputs/segmentation")
     args = parser.parse_args(argv)
 
@@ -436,6 +749,9 @@ def main(argv=None) -> int:
         workers=args.workers,
         amp=not args.no_amp,
         class_weight_power=args.class_weight_power,
+        arch=args.arch,
+        change_weight_power=args.change_weight_power,
+        unchanged_class_supervision=args.unchanged_class_supervision,
         out_dir=args.out_dir,
     )
 
