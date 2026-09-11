@@ -65,6 +65,21 @@ def analyze_single_image(
         }
     trace.append("input_validation_ok")
 
+    # ── 1b. Spectral-index queries bypass the VLM ────────────────────────
+    # The VLM only sees RGB; an index needs NIR/SWIR. The tool computes it
+    # from real bands or refuses -- the VLM is never asked to guess.
+    route = classify_query(query)
+    if route.task == "spectral_index":
+        from satquery.tools.spectral_index import compute_spectral_index
+
+        trace.append(f"query_classified:{route.task}:{route.rule}")
+        result = compute_spectral_index(image_path, index=route.index)
+        trace.append(f"spectral_index_tool:{result.index}:{result.status}")
+        out = result.to_dict()
+        out["task"] = "spectral_index"
+        out["execution_trace"] = trace
+        return out
+
     # ── 2. Load & preprocess ─────────────────────────────────────────────
     loaded = load_image(image_path)
     rgb, preprocess_meta = to_model_rgb(loaded.array, loaded.metadata)
@@ -72,7 +87,6 @@ def analyze_single_image(
     trace.append(f"preprocess_bands:{preprocess_meta['bands_used']}")
 
     # ── 3. Query classification ──────────────────────────────────────────
-    route = classify_query(query)
     trace.append(f"query_classified:{route.task}:{route.rule}")
 
     # ── 4. Model selection ───────────────────────────────────────────────
