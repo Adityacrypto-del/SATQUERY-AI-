@@ -83,6 +83,12 @@ def describe_tool(checkpoint: Optional[str] = None) -> Dict[str, Any]:
             "index-based producer detected change across 34% of the scene. "
             "For such input the deterministic index path is the usable one, "
             "and the reported confidence drops to 0.0 with that stated.",
+            "The physics-based index producer is a cross-check, NOT a "
+            "substitute answer path. Scored against OSCD's reference change "
+            "masks on 10 real Sentinel-2 pairs it reaches IoU 0.076, "
+            "precision 0.084, recall 0.552 -- it finds about half the real "
+            "change but over-detects by roughly six times. Use it to tell "
+            "whether the trained model is out of its depth, not to answer.",
             "Input outside the training distribution is detected, not "
             "guessed: every optical pair with computable spectral indices is "
             "cross-checked against a physics-based producer, and a flat "
