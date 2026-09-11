@@ -42,3 +42,7 @@ datasets/SECOND*/
 datasets/second*/
 datasets/CDVQA*/
 datasets/cdvqa*/
+
+# OSCD Sentinel-2 test data (dataset bytes, never committed)
+datasets/oscd/
+*.parquet
