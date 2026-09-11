@@ -275,4 +275,83 @@ def test_confidence_collapses_when_the_two_producers_flatly_contradict():
     assert extras["cross_check_contradiction"] is True
     assert result.confidence == 0.0, "a contradicted model must not sound calibrated"
     basis = extras["confidence_basis"].lower()
-    assert "outside the distribution" in basis
+    assert "outside that" in basis or "outside the distribution" in basis
+
+
+def test_one_stray_pixel_cannot_defeat_the_out_of_distribution_guard():
+    """The guard first required the model to find *exactly* zero change,
+    justified as needing no invented threshold. It was brittle instead: on
+    three real Sentinel-2 scenes the model found 0, 126 and 3,526 changed
+    pixels and only the first was caught, so two of them reported 0.82
+    confidence on input just as far out of distribution.
+
+    The rule is categorical now. The calibration was measured entirely on
+    SECOND, which is 3-band RGB; this cross-check only runs when NDVI/NDWI/
+    NDBI are computable, which needs NIR. Reaching it at all means the input
+    is not SECOND-like.
+    """
+    from tools.change_analysis.pipeline import BiTemporalPipeline, PipelineConfig
+
+    class _BarelySeeing:
+        """Finds a handful of changed pixels -- enough to defeat "exactly 0"."""
+
+        val_report = {"per_type": {"change_ratio": {"accuracy": 0.83}}}
+        calibration = None
+        last_margin = None
+
+        def metadata(self):
+            return {"arch": "fake", "value_scaling": "none"}
+
+        def predict_with_margin(self, t1, t2):
+            shape = t1.array.shape[1:]
+            maps = np.zeros(shape, dtype=np.int64)
+            maps[0, 0] = 4  # one single pixel
+            return maps, maps.copy(), 0.95
+
+    rng = np.random.default_rng(0)
+    names = ["red", "green", "blue", "nir", "swir"]
+
+    def frame(nir_level):
+        array = rng.uniform(0.05, 0.15, (5, 32, 32)).astype(np.float32)
+        array[3, :16] = nir_level
+        return RSImage(array=array, crs=None, transform=None,
+                       modality="optical", band_names=names, gsd_m=None)
+
+    pipeline = BiTemporalPipeline(PipelineConfig(), segmenter=_BarelySeeing())
+    result = pipeline.run(frame(0.9), frame(0.05),
+                          "What is the percentage of changed areas?")
+
+    assert result.confidence == 0.0, "one pixel must not buy a calibrated number"
+
+
+def test_rgb_input_keeps_its_calibrated_confidence():
+    """The counterpart. The guard must not fire on the regime it was measured
+    on, or every real CDVQA answer loses its confidence."""
+    from tools.change_analysis.pipeline import BiTemporalPipeline, PipelineConfig
+
+    class _Segmenter:
+        val_report = {"per_type": {"change_or_not": {"accuracy": 0.845}}}
+        calibration = None
+        last_margin = None
+
+        def metadata(self):
+            return {"arch": "fake", "value_scaling": "none"}
+
+        def predict_with_margin(self, t1, t2):
+            shape = t1.array.shape[1:]
+            maps = np.zeros(shape, dtype=np.int64)
+            maps[:8] = 4
+            return maps, maps.copy(), 0.9
+
+    def rgb():
+        return RSImage(
+            array=np.full((3, 32, 32), 0.4, dtype=np.float32), crs=None,
+            transform=None, modality="optical",
+            band_names=["red", "green", "blue"], gsd_m=None,
+        )
+
+    pipeline = BiTemporalPipeline(PipelineConfig(), segmenter=_Segmenter())
+    result = pipeline.run(rgb(), rgb(), "Have the areas of buildings changed?")
+
+    assert result.evidence_extras["cross_check_contradiction"] is False
+    assert result.confidence > 0.0, "RGB is the calibrated regime"

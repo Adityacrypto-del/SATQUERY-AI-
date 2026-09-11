@@ -65,8 +65,13 @@ def describe_tool(checkpoint: Optional[str] = None) -> Dict[str, Any]:
             "changed_area_pixels": "integer",
             "changed_area_m2": "float, or null when the input is ungeoreferenced",
             "regions": "per-region pixel count, area, centroid, bbox, spectral signature",
-            "confidence": "measured accuracy for this question type and this "
-                          "image's decision margin; 0.0 where no measured basis exists",
+            "confidence": "the most specific measured accuracy that applies: "
+                          "for this question type about this land-cover class "
+                          "where that was measured, else for this question "
+                          "type at this image's decision margin, else the "
+                          "per-type average. 0.0 wherever no measured basis "
+                          "applies, including when the two internal producers "
+                          "contradict each other.",
             "confidence_basis": "why the confidence is what it is, always populated",
             "overlays": "paths to rendered visual evidence",
             "trace": "one entry per stage: tool, params, observation, duration_ms, why",

@@ -1,12 +1,44 @@
-# Bi-temporal deterministic branch (peek/bitemporal-deterministic)
-# CPU-only dependencies for build-order steps 1-4 and 7-8.
-# Segmentation (step 5-6) deps are listed separately in requirements-segmentation.txt.
+# Branch-2 (bi-temporal change analysis) dependencies.
+#
+# Named for the branch rather than called requirements.txt so it cannot
+# collide with the single-image branch's own file on merge.
+#
+# Versions are the ones this branch was developed and measured against, not
+# a pip freeze: every entry below is imported by code in this branch.
+# Installing these reproduces the environment that produced the reported
+# numbers.
 
-numpy>=1.26,<2.2
-rasterio>=1.3
-affine>=2.4
-scipy>=1.11
-scikit-image>=0.22
-PyYAML>=6.0
-pytest>=8.0
-Pillow>=10.0
+# -- analysis core ---------------------------------------------------------
+numpy==2.1.3
+scipy==1.17.1
+scikit-image==0.26.0          # Otsu thresholding, morphology
+Pillow==12.3.0                # PNG decoding for the benchmark path
+
+# -- geospatial ------------------------------------------------------------
+# rasterio is the only legitimate GeoTIFF reader here; PIL discards CRS and
+# geotransform, which is why io.py never uses it for GeoTIFF.
+rasterio==1.4.4
+affine==3.0.1
+
+# -- segmentation ----------------------------------------------------------
+# Built against CUDA 12.4. The CPU build works and every test passes on it;
+# inference is roughly an order of magnitude slower, and training is not
+# practical. Install the matching build for your machine from
+# https://pytorch.org rather than taking the default wheel blindly.
+torch==2.6.0
+torchvision==0.21.0
+
+# -- HTTP surface (app/bitemporal_server.py) -------------------------------
+# Only needed to serve the specialist over HTTP. The library, the CLI and the
+# test suite do not import these.
+fastapi==0.141.1
+uvicorn==0.52.4
+python-multipart==0.0.32      # multipart upload parsing for the two images
+
+# -- test data tooling (scripts/make_oscd_fixture.py) ----------------------
+# Only needed to regenerate the OSCD GeoTIFF fixtures from the source
+# parquet. Not needed to run the specialist.
+pyarrow==25.0.1
+
+# -- tests -----------------------------------------------------------------
+pytest==9.1.1

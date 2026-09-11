@@ -392,9 +392,22 @@ class BiTemporalPipeline:
                         # 10 m, and the model does not transfer. Recognising
                         # "one found nothing, the other found a third of the
                         # scene" needs no invented threshold.
-                        cross_check_contradiction = bool(
-                            not mask.any() and b_mask.any()
-                        )
+                        # The confidence calibration was measured entirely on
+                        # SECOND, which is 3-band RGB. This cross-check only
+                        # runs when NDVI/NDWI/NDBI are computable, which needs
+                        # NIR -- so reaching this line at all means the input
+                        # is definitionally not SECOND-like and the
+                        # calibration has no evidence about it.
+                        #
+                        # An earlier version required the model to find
+                        # *exactly* zero change, justified as needing no
+                        # invented threshold. It was brittle instead: on three
+                        # real Sentinel-2 scenes the model found 0, 126 and
+                        # 3,526 changed pixels, and only the first was caught.
+                        # The other two reported 0.82 confidence on input just
+                        # as far out of distribution, because one pixel
+                        # defeated the rule.
+                        cross_check_contradiction = True
                         st.observation = (
                             f"change-mask agreement with the index producer: "
                             f"{overlap:.3f} (Jaccard). Model changed fraction "
@@ -585,13 +598,15 @@ class BiTemporalPipeline:
             # measured basis here -- and measured-or-zero means zero.
             confidence = 0.0
             basis = (
-                "none: the trained model detected no change while the "
-                "independent index producer detected "
-                f"{cross_check_agreement if cross_check_agreement else 0:.0%} "
-                "overlap with it. The input is outside the distribution the "
-                "confidence calibration was measured on, so no measured "
-                "basis applies. The answer is reported; the number behind it "
-                "is not."
+                "none: the confidence calibration was measured on SECOND, "
+                "which is 3-band RGB aerial imagery. This input carries "
+                "spectral bands beyond RGB, so it is outside that "
+                "distribution and no measured accuracy applies to it. "
+                f"Change-mask agreement between the trained model and the "
+                f"independent index producer was "
+                f"{cross_check_agreement if cross_check_agreement is not None else 0:.1%}"
+                ", reported as an observation. The answer is reported; the "
+                "number behind it is not."
             )
         with trace.stage(
             "confidence", "pipeline._confidence",

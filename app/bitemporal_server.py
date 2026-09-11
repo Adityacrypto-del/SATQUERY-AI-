@@ -74,6 +74,29 @@ def get_specialist() -> BiTemporalSpecialist:
     return _specialist
 
 
+@app.get("/")
+def index() -> Dict[str, Any]:
+    """What lives here. This is an API, not a page.
+
+    Without this, a browser pointed at the bare host renders nothing and
+    reads as a broken service rather than a working one with no front end.
+    """
+    return {
+        "service": "SatQuery AI -- bi-temporal change analysis (branch 2)",
+        "note": (
+            "This is a JSON API with no HTML front end. For an interactive "
+            "form, open /docs."
+        ),
+        "endpoints": {
+            "GET  /docs": "interactive request builder (FastAPI)",
+            "GET  /api/bitemporal/health": "is a checkpoint loaded",
+            "GET  /api/bitemporal/describe": "tool-registry descriptor",
+            "POST /api/bitemporal/analyze": "two images + query -> evidence",
+            "GET  /api/bitemporal/evidence/{name}": "a rendered overlay PNG",
+        },
+    }
+
+
 @app.get("/api/bitemporal/health")
 def health() -> Dict[str, Any]:
     return {
