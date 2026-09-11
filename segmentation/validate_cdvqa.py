@@ -88,8 +88,7 @@ class CDVQAValidator:
             x = x.to(device, non_blocking=True)
             y1d, y2d = y1.to(device), y2.to(device)
             with torch.amp.autocast("cuda", enabled=amp and device.type == "cuda"):
-                o1, o2 = model(x)
-            p1, p2 = o1.argmax(1), o2.argmax(1)
+                p1, p2 = model.predict(x)
 
             for k in (0, 1):
                 pred, target = (p1, y1d) if k == 0 else (p2, y2d)
