@@ -94,13 +94,23 @@ class ChangeResult:
             georeferencing={},
         )
 
-    def to_change_evidence(self):
-        """Downgrade into the shared contract. Integration is this one call.
+    def to_change_evidence(self, strict: bool = False):
+        """Hand off to the controller. Integration is this one call.
 
-        The import is lazy on purpose -- see the module docstring. Only the
-        fields the shared dataclass actually declares are copied, so this
-        adapter needs no edit whether or not ``answer`` and ``trace`` are
-        added to it later.
+        Returns a :class:`~tools.change_analysis.contract.BiTemporalEvidence`,
+        which *is* a ``ChangeEvidence`` by subclassing and additionally carries
+        the answer token, question type, execution trace, confidence basis,
+        overlay paths, route and any compound per-class answers. Those are the
+        artefacts the problem statement grades, and the seven-field shared
+        schema has nowhere to put them.
+
+        Pass ``strict=True`` for exactly the shared shape, for a consumer that
+        rebuilds the dataclass from its declared fields and would choke on
+        anything extra.
+
+        The imports are lazy on purpose -- see the module docstring. Fields are
+        copied by name from whatever the target declares, so this needs no edit
+        if the shared schema later absorbs the additions.
 
         Raises
         ------
@@ -110,14 +120,31 @@ class ChangeResult:
         """
         from modules.bi_temporal.schemas import ChangeEvidence
 
-        accepted = {
-            f.name
-            for f in dataclasses.fields(ChangeEvidence)
-            if f.init
+        target = ChangeEvidence
+        if not strict:
+            from .contract import BiTemporalEvidence
+
+            target = BiTemporalEvidence
+
+        extras = getattr(self, "evidence_extras", None) or {}
+        answer_evidence = extras.get("answer_evidence") or {}
+        # Sources, in priority order: the result's own attributes first, then
+        # the extras dict the pipeline attaches. Nothing is invented -- a name
+        # absent from both is simply not passed, and keeps its default.
+        available = {
+            "confidence_basis": extras.get("confidence_basis"),
+            "question_type": extras.get("question_type"),
+            "route": extras.get("route"),
+            "overlays": extras.get("overlays"),
+            "compound_answers": answer_evidence.get("per_class"),
         }
-        payload = {
-            name: getattr(self, name)
-            for name in accepted
-            if hasattr(self, name)
-        }
-        return ChangeEvidence(**payload)
+
+        payload = {}
+        for f in dataclasses.fields(target):
+            if not f.init:
+                continue
+            if hasattr(self, f.name):
+                payload[f.name] = getattr(self, f.name)
+            elif available.get(f.name) is not None:
+                payload[f.name] = available[f.name]
+        return target(**payload)

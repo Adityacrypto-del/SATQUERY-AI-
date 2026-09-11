@@ -66,16 +66,33 @@ def test_downgrade_maps_the_shared_fields():
     ]
 
 
-def test_fields_absent_from_the_schema_are_dropped_not_forced():
-    """Today ChangeEvidence has no answer/trace. Dropping them must not raise."""
+def test_strict_mode_drops_fields_absent_from_the_shared_schema_without_raising():
+    """The shared ChangeEvidence declares no answer/trace. A consumer that
+    wants exactly that shape asks for it, and the extra fields are dropped
+    rather than forced in.
+
+    This previously asserted the default did the dropping. The default now
+    returns BiTemporalEvidence, which carries them -- dropping the trace at
+    the boundary meant discarding the artefact the problem statement grades.
+    The narrow path is still available and still must not raise.
+    """
     from modules.bi_temporal.schemas import ChangeEvidence
 
     schema_fields = {f.name for f in dataclasses.fields(ChangeEvidence)}
-    evidence = _make_result().to_change_evidence()
+    evidence = _make_result().to_change_evidence(strict=True)
 
+    assert type(evidence) is ChangeEvidence
     for absent in ("answer", "trace"):
         if absent not in schema_fields:
             assert not hasattr(evidence, absent)
+
+
+def test_the_default_handoff_carries_what_the_ps_grades():
+    """The counterpart: by default nothing graded is lost at the boundary."""
+    evidence = _make_result().to_change_evidence()
+
+    assert evidence.trace, "the execution trace is a graded artefact"
+    assert hasattr(evidence, "answer")
 
 
 def test_extra_schema_fields_are_carried_through_when_they_appear(monkeypatch):
