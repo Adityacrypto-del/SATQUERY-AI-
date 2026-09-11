@@ -133,7 +133,7 @@ class BiTemporalPipeline:
 
     def _confidence(
         self, question_type: Optional[str], validation, route: str,
-        target_class: Optional[str] = None,
+        target_class: Optional[str] = None, margin: Optional[float] = None,
     ) -> Tuple[float, str]:
         """Confidence from measured accuracy, or 0.0 with an explicit basis.
 
@@ -188,7 +188,7 @@ class BiTemporalPipeline:
                 basis += f". {caveat}"
             return float(max(0.0, min(1.0, accuracy))), basis
 
-        refined = self._calibrated_accuracy(question_type)
+        refined = self._calibrated_accuracy(question_type, margin)
         if refined is not None:
             accuracy, low, high, n = refined
             basis = (
@@ -250,7 +250,7 @@ class BiTemporalPipeline:
             )
         return float(cell["accuracy"]), int(cell["n"]), caveat
 
-    def _calibrated_accuracy(self, question_type):
+    def _calibrated_accuracy(self, question_type, margin=None):
         """Measured accuracy for this question type at this image's margin.
 
         Returns ``(accuracy, bin_low, bin_high, n)``, or None when there is no
@@ -260,7 +260,8 @@ class BiTemporalPipeline:
         """
         segmenter = self.segmenter
         calibration = getattr(segmenter, "calibration", None)
-        margin = getattr(segmenter, "last_margin", None)
+        if margin is None:
+            margin = getattr(segmenter, "last_margin", None)
         if not calibration or margin is None or not question_type:
             return None
         cells = (calibration.get("per_type_bins") or {}).get(question_type)
@@ -319,6 +320,7 @@ class BiTemporalPipeline:
             st.observation = f"route={route} ({reason})"
 
         s_t1 = s_t2 = None
+        margin = None
         detection = None
         producer_b_trace = None
         cross_check_agreement = None
@@ -332,7 +334,14 @@ class BiTemporalPipeline:
                 "deterministic rules have class maps to reason over.",
                 {"checkpoint": config.checkpoint},
             ) as st:
-                s_t1, s_t2 = self.segmenter.predict(t1, t2)
+                # A caller may inject its own segmenter, and one predating
+                # the margin API is still usable -- it simply yields no
+                # per-instance calibration, and the confidence falls back to
+                # the per-type prior rather than failing.
+                if hasattr(self.segmenter, "predict_with_margin"):
+                    s_t1, s_t2, margin = self.segmenter.predict_with_margin(t1, t2)
+                else:
+                    s_t1, s_t2 = self.segmenter.predict(t1, t2)
                 mask = s_t1 != 0
                 meta = self.segmenter.metadata()
                 st.params.update({
@@ -554,7 +563,7 @@ class BiTemporalPipeline:
 
         # 8 -- confidence
         confidence, basis = self._confidence(
-            question_type, validation, route, target_class
+            question_type, validation, route, target_class, margin
         )
         with trace.stage(
             "confidence", "pipeline._confidence",

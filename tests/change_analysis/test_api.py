@@ -142,3 +142,83 @@ def test_an_unknown_class_is_refused_rather_than_guessed():
 
     with pytest.raises(ValueError, match="unknown land-cover class"):
         focus_comparison(t1, t2, zeros, zeros, target_class="parking_lot")
+
+
+# -- concurrency ------------------------------------------------------------
+
+
+def test_concurrent_calls_do_not_swap_confidences():
+    """One specialist serves many calls and a controller may make them at
+    once. The softmax margin used to live on the segmenter instance and was
+    read back after the fact: measured across six threads, four calls
+    returned another call's margin, and so another call's confidence. Wrong
+    numbers rather than a crash, which is the harder kind to notice.
+    """
+    import threading
+
+    class _Segmenter:
+        """Returns a margin keyed to the input, so a swap is detectable."""
+
+        val_report = {"per_type": {"change_ratio": {"accuracy": 0.5}}}
+        calibration = {
+            "per_type_bins": {
+                "change_ratio": [
+                    {"low": -1e9, "high": 0.5, "n": 500, "accuracy": 0.2,
+                     "usable": True},
+                    {"low": 0.5, "high": 1e9, "n": 500, "accuracy": 0.9,
+                     "usable": True},
+                ]
+            }
+        }
+        last_margin = None
+
+        def metadata(self):
+            return {"arch": "fake", "value_scaling": "none"}
+
+        def predict_with_margin(self, t1, t2):
+            import time
+
+            # The margin is decided by the input; any crossing shows up as a
+            # confidence that does not match the image that produced it.
+            margin = 0.9 if float(t1.array.mean()) > 0.5 else 0.1
+            self.last_margin = margin
+            time.sleep(0.01)  # widen the window a real forward pass creates
+            shape = t1.array.shape[1:]
+            maps = np.zeros(shape, dtype=np.int64)
+            maps[:2] = 4
+            return maps, maps.copy(), margin
+
+    from tools.change_analysis.pipeline import BiTemporalPipeline, PipelineConfig
+
+    pipeline = BiTemporalPipeline(PipelineConfig(), segmenter=_Segmenter())
+    question = "What is the percentage of changed areas?"
+
+    def run(level):
+        image = RSImage(
+            array=np.full((3, 16, 16), level, dtype=np.float32), crs=None,
+            transform=None, modality="optical",
+            band_names=["red", "green", "blue"], gsd_m=None,
+        )
+        return pipeline.run(image, image, question).confidence
+
+    expected = {0.9: run(0.9), 0.1: run(0.1)}
+    assert expected[0.9] != expected[0.1], "the fixture must be discriminating"
+
+    seen = {}
+    levels = [0.9, 0.1] * 4
+
+    def work(index, level):
+        seen[index] = run(level)
+
+    threads = [threading.Thread(target=work, args=(i, l))
+               for i, l in enumerate(levels)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for index, level in enumerate(levels):
+        assert seen[index] == expected[level], (
+            f"call {index} at level {level} returned {seen[index]}, "
+            f"expected {expected[level]} -- a margin crossed between calls"
+        )

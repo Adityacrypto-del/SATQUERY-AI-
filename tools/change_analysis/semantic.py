@@ -196,6 +196,20 @@ class SemanticSegmenter:
 
     def predict(self, t1: RSImage, t2: RSImage) -> Tuple[np.ndarray, np.ndarray]:
         """Predict ``(s_t1, s_t2)`` as ``(H, W)`` int class maps in 0..6."""
+        s1, s2, _ = self.predict_with_margin(t1, t2)
+        return s1, s2
+
+    def predict_with_margin(self, t1: RSImage, t2: RSImage):
+        """``(s_t1, s_t2, softmax_margin)`` -- the margin returned, not stashed.
+
+        One specialist instance serves many calls, and a controller may make
+        them concurrently. Reading the margin back off the instance after the
+        fact is a race: measured on six scenes across six threads, four came
+        back with another call's margin and therefore another call's
+        confidence. Silently wrong numbers, not a crash. So the margin
+        travels out with the prediction that produced it, and
+        :attr:`last_margin` survives only for single-threaded metadata.
+        """
         if t1.shape != t2.shape:
             raise ValueError(
                 f"t1 and t2 must share a spatial shape; got {t1.shape} and {t2.shape}"
@@ -227,8 +241,9 @@ class SemanticSegmenter:
 
         s1 = p1[0].to(torch.int64).cpu().numpy()[:height, :width]
         s2 = p2[0].to(torch.int64).cpu().numpy()[:height, :width]
-        self._last_margin = self._margin(outputs)
-        return s1, s2
+        margin = self._margin(outputs)
+        self._last_margin = margin
+        return s1, s2, margin
 
     def _margin(self, outputs) -> float:
         """Mean softmax top-1 minus top-2 margin over every decision made.
@@ -257,5 +272,9 @@ class SemanticSegmenter:
 
     @property
     def last_margin(self) -> Optional[float]:
-        """Softmax margin from the most recent :meth:`predict` call."""
+        """Margin from the most recent call **on this instance**.
+
+        Not safe to read across concurrent calls -- use the value returned by
+        :meth:`predict_with_margin` for anything that affects a result.
+        """
         return getattr(self, "_last_margin", None)
