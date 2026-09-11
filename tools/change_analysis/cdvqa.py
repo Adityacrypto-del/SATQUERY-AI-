@@ -350,14 +350,51 @@ def answer_question(
 
 # Ordered most-specific first: "what has X changed to" must not be caught by
 # the generic "changed" test that answers change_or_not.
+# Patterns are ordered: the first match wins, so the specific families come
+# before the general change_or_not catch-all.
+#
+# CDVQA phrasing is only half the job. The benchmark asks "Have the areas of
+# water changed?", but a person asks "are there any water bodies erased?" or
+# "did the water disappear?" -- and those used to fall through to the
+# descriptive path even though the target class parsed correctly. The
+# benchmark number is unaffected either way (benchmark questions use
+# benchmark phrasing), but a specialist a controller routes real user queries
+# to has to understand more than one dialect.
+#
+# The synonyms below are deliberately conservative. Broadening a pattern can
+# only *steal* a question from a later pattern, never from an earlier one,
+# so each addition is placed where it cannot capture another family's
+# phrasing, and the CDVQA routing is asserted unchanged by the test suite and
+# by the oracle.
 _TYPE_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
-    ("change_to_what", re.compile(r"changed?\s+(in)?to|turn(ed)?\s+into|become")),
-    ("increase_or_not", re.compile(r"increase|grow|expand|rise|more of")),
-    ("decrease_or_not", re.compile(r"decrease|shrink|reduce|decline|less of")),
-    ("largest_change", re.compile(r"largest|biggest|greatest|most change")),
-    ("smallest_change", re.compile(r"smallest|least|tiniest|minimum change")),
-    ("change_ratio_types", re.compile(r"(ratio|percentage|proportion|how much|what fraction)")),
-    ("change_or_not", re.compile(r"chang|differ|alter|modif")),
+    ("change_to_what", re.compile(
+        r"changed?\s+(in)?to|turn(ed)?\s+into|become|became|replaced\s+by|"
+        r"converted\s+(in)?to|now.*\?$"
+    )),
+    ("increase_or_not", re.compile(
+        r"increase|grow|expand|rise|risen|more of|more|gone\s+up|went\s+up|"
+        r"gained|added|greater\s+area|spread"
+    )),
+    ("decrease_or_not", re.compile(
+        r"decrease|shrink|shrunk|reduce|decline|less of|less|fewer|lost|"
+        r"gone\s+down|went\s+down|erased|removed|disappear|vanish|cleared|"
+        r"destroyed|demolish|deforest|dried\s+up"
+    )),
+    # "changed the most" is tightened to the verb, not a bare "most":
+    # "most of the water changed" is a change_or_not question and these
+    # patterns are tried first, so a loose "most" would steal it.
+    ("largest_change", re.compile(
+        r"largest|biggest|greatest|most change|chang\w*\s+(the\s+)?most|max"
+    )),
+    ("smallest_change", re.compile(
+        r"smallest|least|tiniest|minimum change|chang\w*\s+(the\s+)?least"
+    )),
+    ("change_ratio_types", re.compile(
+        r"(ratio|percentage|percent|proportion|how much|what fraction|how many)"
+    )),
+    ("change_or_not", re.compile(
+        r"chang|differ|alter|modif|any\s+new|appear|emerged|built|constructed"
+    )),
 ]
 
 
