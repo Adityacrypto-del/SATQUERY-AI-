@@ -324,6 +324,7 @@ class BiTemporalPipeline:
         detection = None
         producer_b_trace = None
         cross_check_agreement = None
+        cross_check_contradiction = False
         target_class = parse_question(query)["target"] if query else None
 
         # 3 -- change extraction
@@ -382,6 +383,18 @@ class BiTemporalPipeline:
                             float((mask & b_mask).sum()) / union if union else 1.0
                         )
                         cross_check_agreement = overlap
+                        # A categorical contradiction, not a matter of degree:
+                        # the trained model found no change at all while
+                        # independent physical evidence found some. Measured
+                        # on a real Sentinel-2 pair the model reported 0.0000
+                        # changed against the index producer's 0.3410 --
+                        # SECOND is sub-metre aerial imagery, Sentinel-2 is
+                        # 10 m, and the model does not transfer. Recognising
+                        # "one found nothing, the other found a third of the
+                        # scene" needs no invented threshold.
+                        cross_check_contradiction = bool(
+                            not mask.any() and b_mask.any()
+                        )
                         st.observation = (
                             f"change-mask agreement with the index producer: "
                             f"{overlap:.3f} (Jaccard). Model changed fraction "
@@ -565,6 +578,21 @@ class BiTemporalPipeline:
         confidence, basis = self._confidence(
             question_type, validation, route, target_class, margin
         )
+        if cross_check_contradiction:
+            # The calibration was measured on inputs where the model does
+            # detect change. It says nothing about an input where the model
+            # detects none and physics says otherwise, so there is no
+            # measured basis here -- and measured-or-zero means zero.
+            confidence = 0.0
+            basis = (
+                "none: the trained model detected no change while the "
+                "independent index producer detected "
+                f"{cross_check_agreement if cross_check_agreement else 0:.0%} "
+                "overlap with it. The input is outside the distribution the "
+                "confidence calibration was measured on, so no measured "
+                "basis applies. The answer is reported; the number behind it "
+                "is not."
+            )
         with trace.stage(
             "confidence", "pipeline._confidence",
             "Report a confidence only where a measured basis exists; "
@@ -603,6 +631,7 @@ class BiTemporalPipeline:
             "segmenter": self.segmenter.metadata() if route == "semantic" else None,
             "index_classifier": producer_b_trace,
             "cross_check_agreement": cross_check_agreement,
+            "cross_check_contradiction": cross_check_contradiction,
         }
         return result
 

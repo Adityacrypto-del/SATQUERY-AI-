@@ -186,6 +186,27 @@ class SemanticSegmenter:
             return (planes - low) / max(high - low, 1e-6)
         finite = planes[np.isfinite(planes)]
         peak = float(np.nanmax(finite)) if finite.size else 0.0
+        if peak > 255.0:
+            # Digital numbers, not 8-bit. Sentinel-2 L1C runs to ~10000 and
+            # a real scene measured here peaked at 14635; dividing by 255
+            # pushed every value past 1.0, clipped the image to white, and
+            # the model reported no change on a pair where a third of the
+            # scene had changed -- at 82% confidence.
+            #
+            # There is no single correct divisor: the scale factor varies by
+            # product and is not in the pixels. So instead of guessing one,
+            # stretch to the same 0-1 range the model was trained on, using
+            # percentiles over valid pixels so one bright outlier cannot
+            # flatten the scene. The assumption is recorded and travels into
+            # the trace, as every other assumption here does.
+            low, high = np.percentile(finite, (2.0, 98.0))
+            if high > low:
+                self._last_scaling = (
+                    f"percentile_stretch_2_98_from_dn (peak {peak:.0f})"
+                )
+                return (planes - low) / (high - low)
+            self._last_scaling = f"degenerate_dn_range (peak {peak:.0f})"
+            return np.zeros_like(planes)
         if peak > 1.5:
             self._last_scaling = "assumed_0_255"
             return planes / 255.0

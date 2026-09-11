@@ -222,3 +222,57 @@ def test_concurrent_calls_do_not_swap_confidences():
             f"call {index} at level {level} returned {seen[index]}, "
             f"expected {expected[level]} -- a margin crossed between calls"
         )
+
+
+# -- out-of-distribution input ---------------------------------------------
+
+
+def test_confidence_collapses_when_the_two_producers_flatly_contradict():
+    """Measured on a real Sentinel-2 GeoTIFF pair: the SECOND-trained model
+    detected no change at all while the index producer detected change across
+    34% of the scene, and the system answered "0" to the change-ratio
+    question at 0.83 confidence. SECOND is sub-metre aerial imagery and
+    Sentinel-2 is 10 m, so the model does not transfer.
+
+    The calibration was measured on inputs where the model does detect
+    change; it says nothing about one where the model detects none and
+    physics disagrees. Measured-or-zero therefore means zero, and the basis
+    has to say which.
+    """
+    from tools.change_analysis.pipeline import BiTemporalPipeline, PipelineConfig
+
+    class _BlindSegmenter:
+        """Detects nothing, and is confident about it."""
+
+        val_report = {"per_type": {"change_ratio": {"accuracy": 0.83}}}
+        calibration = None
+        last_margin = None
+
+        def metadata(self):
+            return {"arch": "fake", "value_scaling": "none"}
+
+        def predict_with_margin(self, t1, t2):
+            shape = t1.array.shape[1:]
+            blank = np.zeros(shape, dtype=np.int64)
+            return blank, blank.copy(), 0.95
+
+    # Multispectral, so the index producer can supply a second opinion and
+    # will find change where the model found none.
+    rng = np.random.default_rng(0)
+    names = ["red", "green", "blue", "nir", "swir"]
+
+    def frame(nir_level):
+        array = rng.uniform(0.05, 0.15, (5, 32, 32)).astype(np.float32)
+        array[3, :16] = nir_level      # vegetation on the top half at t1 only
+        return RSImage(array=array, crs=None, transform=None,
+                       modality="optical", band_names=names, gsd_m=None)
+
+    pipeline = BiTemporalPipeline(PipelineConfig(), segmenter=_BlindSegmenter())
+    result = pipeline.run(frame(0.9), frame(0.05),
+                          "What is the percentage of changed areas?")
+    extras = result.evidence_extras
+
+    assert extras["cross_check_contradiction"] is True
+    assert result.confidence == 0.0, "a contradicted model must not sound calibrated"
+    basis = extras["confidence_basis"].lower()
+    assert "outside the distribution" in basis

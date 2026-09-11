@@ -76,8 +76,18 @@ def describe_tool(checkpoint: Optional[str] = None) -> Dict[str, Any]:
             "SAR input yields binary change detection only: backscatter carries "
             "no mapping to land-cover classes, so class questions are refused "
             "rather than answered.",
-            "The trained segmenter is a 3-band RGB model trained on SECOND "
-            "(aerial imagery). Its accuracy on other sensors is not measured.",
+            "The trained segmenter is a 3-band RGB model trained on SECOND, "
+            "which is sub-metre aerial imagery. It does NOT transfer to "
+            "medium-resolution satellite imagery: on a real Sentinel-2 pair "
+            "at 10 m it detected no change at all while an independent "
+            "index-based producer detected change across 34% of the scene. "
+            "For such input the deterministic index path is the usable one, "
+            "and the reported confidence drops to 0.0 with that stated.",
+            "Input outside the training distribution is detected, not "
+            "guessed: every optical pair with computable spectral indices is "
+            "cross-checked against a physics-based producer, and a flat "
+            "contradiction between them zeroes the confidence rather than "
+            "letting a calibrated-looking number stand.",
             "Rare land-cover classes are under-predicted: on validation, water "
             "is predicted at 0.22x its true frequency and playgrounds are never "
             "predicted. Questions about those classes are answered with "
