@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Large Model Checkpoint weights (>100MB exceeding GitHub limits)
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# Output artifacts
+output_results.png
+output_embeddings.json
+reasoning_result.json
+branch_output.json
+*.log
