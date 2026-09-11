@@ -4,23 +4,7 @@ import * as React from "react";
 import { useEffect, useRef } from "react";
 
 /* -------------------------------------------------------------------------- */
-/*  What this draws                                                           */
-/*                                                                            */
-/*  The Sun does not sit still. Relative to the stars around it, it moves at   */
-/*  19.4 km/s toward the solar apex in Hercules. The planets keep running      */
-/*  their Kepler ellipses around it, so the path each planet actually cuts     */
-/*  through space is an ellipse plus a straight drift: a helix.                */
-/*                                                                            */
-/*  The camera travels with the Sun. That is why the Sun stays put, the        */
-/*  background stars slide past with real depth parallax, and every planet     */
-/*  leaves a spiral behind it as it chases the Sun.                            */
-/*                                                                            */
-/*  One thing here is drawn for looks rather than for truth, and it is worth   */
-/*  naming. By default the orbits are swung square to the Sun's course, which  */
-/*  makes every wake a helix about one shared axis and lays the coils out      */
-/*  parallel. That is the geometry of the popular "vortex" video, and it is    */
-/*  not ours: the real ecliptic leans 53 degrees to the course, so the real    */
-/*  helices lean too. alignToCourse={0} gives you that instead.                */
+/*  Keplerian Orbital Planetary Simulation Hero                               */
 /* -------------------------------------------------------------------------- */
 
 export type Planet = {
@@ -38,7 +22,7 @@ export type Planet = {
   /** Mean anomaly at the J2000 epoch, in degrees. */
   M0: number;
   color: string;
-  /** Dot radius in px. Not to scale — nothing would be visible if it were. */
+  /** Dot radius in px. */
   size: number;
   /** Per-planet brightness multiplier. */
   glow?: number;
@@ -46,105 +30,33 @@ export type Planet = {
 
 export interface OrbitalHeroSectionProps
   extends React.HTMLAttributes<HTMLDivElement> {
-  /** Bodies to run. Defaults to Mercury through Saturn with J2000 elements. */
   planets?: Planet[];
-  /** Seconds of wall clock per Earth year. */
   yearSeconds?: number;
-  /** How much past track each planet keeps, in Earth years. */
   trailYears?: number;
-  /**
-   * Radial squeeze, applied to the drawing only: a planet at r AU is drawn at
-   * r^compress. At 1 the map is the true solar system, where Neptune is 78
-   * times further out than Mercury and everything inside Jupiter is a speck.
-   * Around 0.42 the orbits spread out evenly across the frame. Orbit shapes,
-   * eccentricities and tilts survive the squeeze; Kepler's third law is then
-   * applied to the drawn spacing, so the inner planets still outrun the outer
-   * ones and every planet still sweeps equal areas in equal times.
-   */
   compress?: number;
-  /** Cap on how many turns of wake a fast planet keeps, so it stays readable. */
   maxTurns?: number;
-  /**
-   * Fans the orbit planes apart, 0 to 1. The real planets all run within 7° of
-   * one plane, so at 0 you get the true article: a flat nested disc seen at an
-   * angle. Turning this up tips each orbit onto its own plane, and the loops
-   * cross each other at all angles instead of nesting.
-   */
   planeSpread?: number;
-  /**
-   * Stretches the orbits, 0 to 1. The real planets run rings: Venus is off a
-   * circle by half a percent, and only Mercury reaches 0.21. At 0 you get
-   * those. Turning it up draws each planet onto a longer, lopsided ellipse,
-   * which puts the Sun visibly at the focus instead of the middle. The motion
-   * stays Keplerian either way — same period, still sweeping equal areas, just
-   * a harder swing through perihelion.
-   */
   eccentricity?: number;
-  /**
-   * Swings every orbit onto the one plane standing square to the Sun's
-   * course, 0 to 1. At 1 the wakes become true helices about a single shared
-   * axis, so the coils run parallel — the tidy look. It is also the geometry
-   * of the popular "vortex" video, and it is not ours: the real ecliptic
-   * leans 53 degrees to the course, which is what you get at 0.
-   */
   alignToCourse?: number;
-  /**
-   * The Sun's speed through the local star field, in drawn units per year.
-   * Earth circles at 2π units a year, so 4.09 is the true 19.4 km/s ratio —
-   * right, but it stretches the coils flat. Lower values wind them tighter.
-   */
   driftSpeed?: number;
-  /** Direction of travel: ecliptic longitude and latitude of the solar apex, in degrees. */
   apex?: [number, number];
-  /** Half-width of the view, in AU. */
   viewRadius?: number;
-  /** Camera pitch in degrees. 0 looks straight down on the ecliptic, 90 is edge-on. */
   tilt?: number;
-  /** Camera yaw in degrees. */
   spin?: number;
-  /**
-   * Camera roll in degrees. Turns the picture about the line of sight, so it
-   * sets which way the helix runs across the screen without touching the
-   * viewing angle. Pick it with tilt and spin so the Sun's track lies flat in
-   * the screen plane: that is the view where a helix reads as a helix. Seen
-   * end-on its turns stack up and look like rings.
-   */
   roll?: number;
-  /** How far ahead of centre the Sun sits, as a fraction of the short side. */
   lead?: number;
-  /**
-   * Where to put the Sun in the frame, as fractions of width and height.
-   * [0.5, 0.5] centres it. Push it off to one side to clear a quiet corner
-   * for hero copy.
-   */
   focus?: [number, number];
-  /**
-   * Lays a black veil over one edge so text can sit there and still be read.
-   * The veil is drawn last, over the whole scene, fading out by two thirds of
-   * the way across.
-   */
   scrim?: "none" | "left" | "right" | "top" | "bottom";
-  /** How dark the veil gets at the edge it starts from, 0 to 1. */
   scrimStrength?: number;
-  /** Number of background stars. */
   starCount?: number;
-  /** Overall bloom strength, 0 to 2. */
   glow?: number;
-  /** Add a faint closed ellipse behind each planet. Off by default. */
   showOrbits?: boolean;
-  /** Draw the Sun's own straight track through space. */
   showSunTrack?: boolean;
-  /** Let the pointer nudge the camera. */
   interactive?: boolean;
-  /** Freeze on the current frame. */
   paused?: boolean;
   sunColor?: string;
   children?: React.ReactNode;
 }
-
-/* -------------------------------------------------------------------------- */
-/*  Real orbital elements, J2000, referred to the ecliptic                    */
-/* -------------------------------------------------------------------------- */
 
 export const SOLAR_SYSTEM: Planet[] = [
   { name: "Mercury", a: 0.38710, e: 0.20563, i: 7.005, node: 48.331, peri: 29.125, M0: 174.796, color: "#fff0d0", size: 2.2 },
@@ -157,33 +69,17 @@ export const SOLAR_SYSTEM: Planet[] = [
   { name: "Neptune", a: 30.0690, e: 0.00859, i: 1.770, node: 131.784, peri: 276.336, M0: 256.228, color: "#3f7dff", size: 4.4 },
 ];
 
-/** Just the four rocky ones, for a tighter frame. */
 export const INNER_PLANETS: Planet[] = SOLAR_SYSTEM.slice(0, 4);
 
-/**
- * Extra tilt and swing added to each orbit plane at planeSpread = 1, in
- * degrees. Fixed rather than random, so the rosette they make is the same
- * every load and on the server as on the client.
- */
 const PLANE_FAN: Array<[number, number]> = [
   [58, 35], [27, 145], [71, 250], [40, 80],
   [84, 190], [33, 310], [62, 120], [15, 20],
 ];
 
-/** Eccentricity each orbit is pulled toward at eccentricity = 1. */
 const ECC_FAN = [0.52, 0.34, 0.63, 0.44, 0.3, 0.58, 0.4, 0.68];
-
-/* -------------------------------------------------------------------------- */
-/*  Maths                                                                     */
-/* -------------------------------------------------------------------------- */
-
 const TAU = Math.PI * 2;
 const RAD = Math.PI / 180;
 
-/**
- * Kepler's equation M = E − e·sin E, solved for the eccentric anomaly.
- * Newton's method; at solar-system eccentricities three passes are plenty.
- */
 function eccentricAnomaly(M: number, e: number): number {
   let m = M % TAU;
   if (m < 0) m += TAU;
@@ -221,10 +117,6 @@ function mulberry32(seed: number) {
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Component                                                                 */
-/* -------------------------------------------------------------------------- */
-
 export function OrbitalHeroSection({
   planets = SOLAR_SYSTEM,
   yearSeconds = 16,
@@ -237,8 +129,6 @@ export function OrbitalHeroSection({
   driftSpeed = 1.5,
   apex = [272, 53],
   viewRadius = 3.4,
-  // Pitch and yaw are picked together so the Sun's track leaves the frame at
-  // about 38° below the horizon, and it runs up and to the right.
   tilt = 45,
   spin = 252,
   roll = 13.5,
@@ -285,24 +175,19 @@ export function OrbitalHeroSection({
     let width = 0;
     let height = 0;
     let dpr = 1;
-    /** Simulation clock, in Earth years since J2000. */
     let years = reduced ? 1.7 : 0;
     let lastFrame = 0;
     let running = true;
     let visible = true;
     let raf = 0;
 
-    /* --- camera ----------------------------------------------------------- */
-    // World axes: x, y span the ecliptic, z points to the ecliptic north pole.
-    // Screen basis is built from yaw about z, then pitch about the new x.
     let pxPerAU = 1;
     let cx = 0;
     let cy = 0;
-    let camDist = 1; // camera standoff from the Sun, in AU
-    // basis vectors in world coords
+    let camDist = 1;
     const RIGHT = { x: 1, y: 0, z: 0 };
     const UP = { x: 0, y: 1, z: 0 };
-    const FWD = { x: 0, y: 0, z: 1 }; // points from the Sun back toward the camera
+    const FWD = { x: 0, y: 0, z: 1 };
 
     function setCamera(yawDeg: number, pitchDeg: number, rollDeg: number) {
       const A = yawDeg * RAD;
@@ -312,9 +197,6 @@ export function OrbitalHeroSection({
       const rx = ca, ry = sa, rz = 0;
       const ux = -sa * cb, uy = ca * cb, uz = sb;
       FWD.x = sa * sb; FWD.y = -ca * sb; FWD.z = cb;
-      // Roll turns the picture about the line of sight. It changes nothing in
-      // space — it only decides which way the helix runs across the screen,
-      // which is why it can be set apart from the viewing angle.
       const C = rollDeg * RAD;
       const cr = Math.cos(C), sr = Math.sin(C);
       RIGHT.x = rx * cr + ux * sr;
@@ -325,10 +207,8 @@ export function OrbitalHeroSection({
       UP.z = -rz * sr + uz * cr;
     }
 
-    // Scratch output for project(); reused to keep the hot loop allocation-free.
     const P = { x: 0, y: 0, depth: 0, s: 0, ok: false };
 
-    /** World offset from the Sun → screen. */
     function project(dx: number, dy: number, dz: number) {
       const vx = dx * RIGHT.x + dy * RIGHT.y + dz * RIGHT.z;
       const vy = dx * UP.x + dy * UP.y + dz * UP.z;
@@ -346,8 +226,6 @@ export function OrbitalHeroSection({
       P.ok = true;
     }
 
-    /* --- the Sun's own velocity ------------------------------------------- */
-    // Ecliptic longitude/latitude of the solar apex → a unit vector.
     const DIR = { x: 0, y: 0, z: 0 };
     function setApex(lonDeg: number, latDeg: number) {
       const l = lonDeg * RAD;
@@ -357,17 +235,15 @@ export function OrbitalHeroSection({
       DIR.z = Math.sin(b);
     }
 
-    /* --- heliocentric position from orbital elements ---------------------- */
     type Elements = {
       p: Planet;
       rgb: [number, number, number];
-      e: number; // eccentricity actually drawn
-      aDraw: number; // semi-major axis after the radial squeeze
-      period: number; // years, from Kepler's third law on the drawn spacing
-      n: number; // mean motion, radians per year
+      e: number;
+      aDraw: number;
+      period: number;
+      n: number;
       cw: number; sw: number; ci: number; si: number; cn: number; sn: number;
       M0: number;
-      /** Turns the orbit plane onto the one square to the Sun's course. */
       swing: number[] | null;
     };
 
@@ -375,7 +251,6 @@ export function OrbitalHeroSection({
       p: Planet, index: number, gamma: number, spread: number, ecc: number, align: number
     ): Elements {
       const aDraw = Math.pow(p.a, gamma);
-      // Kepler's third law: P² ∝ a³, so P = a^1.5 years and n = 2π/P.
       const period = Math.pow(aDraw, 1.5);
       const fan = PLANE_FAN[index % PLANE_FAN.length];
       const inc = (p.i + spread * fan[0]) * RAD;
@@ -397,17 +272,9 @@ export function OrbitalHeroSection({
       };
     }
 
-    /**
-     * Builds the rotation that swings an orbit plane toward the one standing
-     * square to the Sun's course. Feed it the plane's normal; at align = 1 the
-     * normal ends up along the course, which makes every wake a true helix
-     * about it, and all the helices share one axis.
-     */
     function swingToCourse(
       nx: number, ny: number, nz: number, align: number
     ): number[] | null {
-      // Aim at whichever end of the course the plane already leans toward, so
-      // an orbit is never turned inside out.
       const s = nx * DIR.x + ny * DIR.y + nz * DIR.z >= 0 ? 1 : -1;
       let tx = nx + align * (s * DIR.x - nx);
       let ty = ny + align * (s * DIR.y - ny);
@@ -415,7 +282,6 @@ export function OrbitalHeroSection({
       const tl = Math.hypot(tx, ty, tz);
       if (tl < 1e-9) return null;
       tx /= tl; ty /= tl; tz /= tl;
-      // Rodrigues: rotate n onto the blended normal, about their cross product.
       let ax = ny * tz - nz * ty;
       let ay = nz * tx - nx * tz;
       let az = nx * ty - ny * tx;
@@ -433,23 +299,18 @@ export function OrbitalHeroSection({
     }
 
     const R3 = { x: 0, y: 0, z: 0 };
-    /** Heliocentric position at mean anomaly M, already squeezed. Writes R3. */
     function helio(el: Elements, M: number, gamma: number) {
       const e = el.e;
       const E = eccentricAnomaly(M, e);
       const xo = el.p.a * (Math.cos(E) - e);
       const yo = el.p.a * Math.sqrt(1 - e * e) * Math.sin(E);
-      // turn by the argument of perihelion, inside the orbit plane
       const x1 = xo * el.cw - yo * el.sw;
       const y1 = xo * el.sw + yo * el.cw;
-      // tip the plane by the inclination
       const y2 = y1 * el.ci;
       const z2 = y1 * el.si;
-      // swing round by the ascending node
       let x = x1 * el.cn - y2 * el.sn;
       let y = x1 * el.sn + y2 * el.cn;
       let z = z2;
-      // swing the whole plane toward the Sun's course
       const S = el.swing;
       if (S) {
         const rx = S[0] * x + S[1] * y + S[2] * z;
@@ -457,8 +318,6 @@ export function OrbitalHeroSection({
         const rz = S[6] * x + S[7] * y + S[8] * z;
         x = rx; y = ry; z = rz;
       }
-      // Squeeze along the radius. Angles are untouched, so the tilt of every
-      // orbit plane and the offset of the Sun from the ellipse centre survive.
       if (gamma !== 1) {
         const r = Math.sqrt(x * x + y * y + z * z);
         if (r > 1e-9) {
@@ -482,11 +341,6 @@ export function OrbitalHeroSection({
       elems = C.planets.map((p, idx) => elementsOf(p, idx, C.compress, C.planeSpread, C.eccentricity, C.alignToCourse));
     }
 
-    /* --- background stars ------------------------------------------------- */
-    // Kept in world coords, so turning the camera does not drag them along.
-    // Depth parallax is real: near stars slide, far ones barely stir. Distances
-    // are compressed — the true nearest star is 270,000 AU away and would not
-    // shift by a pixel in a lifetime of watching.
     let D_NEAR = 60;
     let D_FAR = 1400;
     const EMPTY = new Float64Array(0);
@@ -495,11 +349,9 @@ export function OrbitalHeroSection({
     let starN = 0;
     let rand = mulberry32(0xc0ffee);
 
-    /** Place one star at a random spot in the frustum, at optional fixed depth. */
     function seedStar(k: number, depth?: number, edge?: 0 | 1 | 2 | 3) {
       const d =
         depth ?? D_NEAR * Math.pow(D_FAR / D_NEAR, Math.pow(rand(), 0.55));
-      // screen offset in px, then back out to world units at that depth
       const halfW = (width * 0.5) * 1.15;
       const halfH = (height * 0.5) * 1.15;
       let ox: number, oy: number;
@@ -512,7 +364,6 @@ export function OrbitalHeroSection({
       const vx = ox * scale;
       const vy = -oy * scale;
       const vz = camDist - d;
-      // view basis → world, then offset by where the Sun is right now
       const wx = vx * RIGHT.x + vy * UP.x + vz * FWD.x + DIR.x * dist;
       const wy = vx * RIGHT.y + vy * UP.y + vz * FWD.y + DIR.y * dist;
       const wz = vx * RIGHT.z + vy * UP.z + vz * FWD.z + DIR.z * dist;
@@ -523,7 +374,6 @@ export function OrbitalHeroSection({
       sTint[k] = t > 0.9 ? 1 : t < 0.08 ? 2 : 0;
     }
 
-    /** Distance the Sun has travelled, in AU. */
     let dist = 0;
 
     function buildStars() {
@@ -541,7 +391,6 @@ export function OrbitalHeroSection({
       for (let k = 0; k < starN; k++) seedStar(k);
     }
 
-    /* --- sprites ---------------------------------------------------------- */
     const glowCache = new Map<string, HTMLCanvasElement>();
     function glowSprite(color: string): HTMLCanvasElement {
       const hit = glowCache.get(color);
@@ -563,17 +412,17 @@ export function OrbitalHeroSection({
       return c;
     }
 
-    /* --- sizing ----------------------------------------------------------- */
     function resize() {
-      const rect = host!.getBoundingClientRect();
-      const w = Math.max(1, rect.width);
-      const h = Math.max(1, rect.height);
+      if (!host || !canvas) return;
+      const rect = host.getBoundingClientRect();
+      const w = Math.max(10, rect.width || host.clientWidth || window.innerWidth || 1200);
+      const h = Math.max(10, rect.height || host.clientHeight || window.innerHeight || 800);
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       if (w === width && h === height) return;
       width = w;
       height = h;
-      canvas!.width = Math.round(w * dpr);
-      canvas!.height = Math.round(h * dpr);
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
       layout();
       buildStars();
@@ -589,7 +438,6 @@ export function OrbitalHeroSection({
       setCamera(C.spin, C.tilt, C.roll);
     }
 
-    /* --- pointer ---------------------------------------------------------- */
     let pointerX = 0, pointerY = 0, camX = 0, camY = 0;
     function onPointer(ev: PointerEvent) {
       if (!props.current.interactive) return;
@@ -599,7 +447,6 @@ export function OrbitalHeroSection({
     }
     function onLeave() { pointerX = 0; pointerY = 0; }
 
-    /* --- the star at the centre ------------------------------------------ */
     function drawSun(k: number, t: number) {
       const [r, g, b] = parseRGB(props.current.sunColor);
       const pulse = 1 + Math.sin(t * 2.1) * 0.02;
@@ -640,15 +487,12 @@ export function OrbitalHeroSection({
       ctx!.fill();
     }
 
-    /* --- one frame -------------------------------------------------------- */
-
     function render(t: number) {
       const C = props.current;
       const k = C.glow;
       layout();
       syncElements();
 
-      // ease the camera toward the pointer
       camX += (pointerX - camX) * 0.04;
       camY += (pointerY - camY) * 0.04;
       setCamera(C.spin + camX * 7, C.tilt + camY * 5, C.roll);
@@ -668,11 +512,11 @@ export function OrbitalHeroSection({
       }
 
       ctx!.globalCompositeOperation = "source-over";
-      ctx!.fillStyle = "#000000";
+      ctx!.fillStyle = "#08090a";
       ctx!.fillRect(0, 0, width, height);
       ctx!.globalCompositeOperation = "lighter";
 
-      /* stars ------------------------------------------------------------- */
+      /* stars */
       const dRef = D_NEAR * 3.3;
       const left = -width * 0.12;
       const right = width * 1.12;
@@ -711,7 +555,7 @@ export function OrbitalHeroSection({
         }
       }
 
-      /* the Sun's own track through space ---------------------------------- */
+      /* Sun track */
       if (C.showSunTrack) {
         const back = C.driftSpeed * C.trailYears * 1.1;
         project(0, 0, 0);
@@ -739,7 +583,7 @@ export function OrbitalHeroSection({
         }
       }
 
-      /* orbit guides ------------------------------------------------------- */
+      /* Orbits */
       if (C.showOrbits) {
         for (const el of elems) {
           const [r, g, b] = el.rgb;
@@ -764,7 +608,7 @@ export function OrbitalHeroSection({
         }
       }
 
-      /* planets and their helical wakes ------------------------------------ */
+      /* Planets & wakes */
       type Shot = { el: Elements; x: number; y: number; depth: number; s: number };
       const shots: Shot[] = [];
 
@@ -826,7 +670,7 @@ export function OrbitalHeroSection({
         }
       }
 
-      /* bodies, back to front around the Sun -------------------------------- */
+      /* Bodies */
       shots.sort((p, q) => q.depth - p.depth);
       const sizeScale = Math.min(width, height) / 660;
       const drawShot = (o: Shot) => {
@@ -850,7 +694,7 @@ export function OrbitalHeroSection({
 
       ctx!.globalCompositeOperation = "source-over";
 
-      /* the veil that copy sits on ----------------------------------------- */
+      /* Scrim veil */
       if (C.scrim !== "none") {
         const s = Math.max(0, Math.min(1, C.scrimStrength));
         const g =
@@ -860,18 +704,16 @@ export function OrbitalHeroSection({
           : ctx!.createLinearGradient(0, height, 0, 0);
         for (let q = 0; q <= 12; q++) {
           const x = q / 12;
-          g.addColorStop(x, `rgba(0,0,0,${(s * Math.pow(1 - x, 2.4)).toFixed(4)})`);
+          g.addColorStop(x, `rgba(8,9,10,${(s * Math.pow(1 - x, 2.4)).toFixed(4)})`);
         }
         ctx!.fillStyle = g;
         ctx!.fillRect(0, 0, width, height);
       }
     }
 
-    /* --- loop ------------------------------------------------------------- */
     function tick(now: number) {
       if (!running) return;
       raf = requestAnimationFrame(tick);
-      if (!visible) { lastFrame = now; return; }
       const dt = lastFrame ? Math.min(0.05, (now - lastFrame) / 1000) : 0;
       lastFrame = now;
       if (!props.current.paused && !reduced) {
@@ -886,18 +728,10 @@ export function OrbitalHeroSection({
 
     const ro = new ResizeObserver(() => {
       resize();
-      if (reduced || props.current.paused) render(years);
+      render(years);
     });
     ro.observe(host);
 
-    const io = new IntersectionObserver(
-      (entries) => { visible = entries[0]?.isIntersecting ?? true; },
-      { threshold: 0 }
-    );
-    io.observe(host);
-
-    const onVisibility = () => { visible = !document.hidden; lastFrame = 0; };
-    document.addEventListener("visibilitychange", onVisibility);
     host.addEventListener("pointermove", onPointer);
     host.addEventListener("pointerleave", onLeave);
 
@@ -905,8 +739,6 @@ export function OrbitalHeroSection({
       running = false;
       cancelAnimationFrame(raf);
       ro.disconnect();
-      io.disconnect();
-      document.removeEventListener("visibilitychange", onVisibility);
       host.removeEventListener("pointermove", onPointer);
       host.removeEventListener("pointerleave", onLeave);
     };
@@ -915,10 +747,10 @@ export function OrbitalHeroSection({
   return (
     <div
       ref={hostRef}
-      className={`relative isolate h-full w-full overflow-hidden bg-black ${className}`}
+      className={`relative isolate h-full w-full overflow-hidden bg-[#08090a] ${className}`}
       {...rest}
     >
-      <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 h-full w-full" />
+      <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 h-full w-full pointer-events-none" />
       {children ? <div className="relative z-10 h-full w-full">{children}</div> : null}
     </div>
   );
