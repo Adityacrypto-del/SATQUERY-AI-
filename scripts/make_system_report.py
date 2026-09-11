@@ -50,8 +50,8 @@ BLOCKS: List[Any] = [
             ["Backend API", "FastAPI, single-image endpoint", "Built"],
             ["Branch 1: single image", "Qwen2-VL-7B-Instruct + LoRA", "Not adapted"],
             ["Branch 2: bi-temporal", "ResNet-18 U-Net + rule engine", "Measured"],
-            ["Branch 3: DeltaVLM", "Adapter interface only (stubs)", "Not built"],
-            ["Optical-SAR fusion", "Not started", "Not built"],
+            ["Branch 3: optical-SAR", "Dual ResNet encoders + Qwen2.5-3B reasoner", "Not trained"],
+            ["DeltaVLM adapter", "Interface only (NotImplementedError stubs)", "Not built"],
         ],
     }),
     ("note", "Branches share one contract (ChangeEvidence) so the controller consumes a "
@@ -113,7 +113,34 @@ BLOCKS: List[Any] = [
              "exactly, so every remaining error is segmentation quality rather than reasoning. "
              "Near-duplicate screening bounds the true test figure at 67.7% or above."),
 
-    ("h1", "4. Datasets"),
+    ("h1", "4. Branch 3 - optical-SAR paired analysis"),
+    ("p", "Optical carries spectral and contextual detail; SAR penetrates cloud and works "
+          "day or night. This branch learns a shared representation of the two so a query "
+          "can draw on whichever modality actually carries the answer."),
+    ("table", {
+        "cols": ["Item", "Specification"],
+        "widths": [52, 118],
+        "rows": [
+            ["Optical encoder", "ResNet-18/34, 13-channel first conv (all Sentinel-2 bands, "
+                                "not reduced to RGB)"],
+            ["SAR encoder", "ResNet-18/34, 2-channel (Sentinel-1 VV + VH backscatter)"],
+            ["Embeddings", "512-dim per modality, 256-dim projection heads"],
+            ["Alignment", "Symmetric InfoNCE (CLIP-style), temperature 0.07"],
+            ["Cloud handling", "Cloud-coverage-aware weighting: heavily clouded optical "
+                               "patches contribute less to the alignment loss"],
+            ["Fusion", "Concat + MLP (default) or cross-attention, 8 heads"],
+            ["Reasoning head", "Qwen2.5-3B-Instruct + LoRA, alpha 32, 64 visual tokens (8x8)"],
+            ["Training config", "50 epochs, batch 64, lr 3e-4, 5 warmup epochs"],
+            ["API", "FastAPI, /api/optical-sar endpoint"],
+            ["Measured accuracy", "NOT YET MEASURED"],
+        ],
+    }),
+    ("note", "The architecture, losses, training loop and API are complete. Only a 3-epoch "
+             "smoke run on synthetic data exists; retrieval scores there sit at chance, which "
+             "is expected for synthetic input and is not a result. Training on real SEN12MS-CR "
+             "data has not been run."),
+
+    ("h1", "5. Datasets"),
     ("table", {
         "cols": ["Dataset", "Role", "Used by", "Scale"],
         "widths": [36, 74, 26, 34],
@@ -121,13 +148,15 @@ BLOCKS: List[Any] = [
             ["SECOND", "Semantic change maps, training labels", "Branch 2", "4,662 pairs"],
             ["CDVQA", "Change VQA benchmark, 19 answers, 8 types", "Branch 2", "2,968 scenes"],
             ["OSCD", "Real Sentinel-2 13-band pairs, GeoTIFF path", "Branch 2", "24 pairs"],
+            ["SEN12MS-CR", "Paired Sentinel-1 SAR and Sentinel-2 optical, cloud-affected",
+             "Branch 3", "13 + 2 bands"],
             ["BigEarthNet-S2", "Domain adaptation corpus for LoRA", "Branch 1", "subset"],
             ["RSVQA", "Single-image VQA evaluation", "Branch 1", "not yet run"],
             ["VRSBench", "Captioning evaluation", "Branch 1", "not yet run"],
         ],
     }),
 
-    ("h1", "5. Problem statement coverage"),
+    ("h1", "6. Problem statement coverage"),
     ("table", {
         "cols": ["Mandatory requirement", "Status"],
         "widths": [128, 42],
@@ -136,7 +165,7 @@ BLOCKS: List[Any] = [
             ["Second single-image task (captioning)", "Built, not measured"],
             ["Bi-temporal change analysis", "Built and measured"],
             ["Spatial change map", "Built"],
-            ["Optical-SAR paired analysis", "NOT BUILT"],
+            ["Optical-SAR paired analysis", "Built, not trained"],
             ["Remote-sensing adaptation (fine-tuning)", "NOT DONE"],
             ["Agentic tool orchestration", "Partial"],
             ["Confidence estimation", "Built (branch 2, measured)"],
@@ -147,7 +176,7 @@ BLOCKS: List[Any] = [
         ],
     }),
 
-    ("h1", "6. What distinguishes this build"),
+    ("h1", "7. What distinguishes this build"),
     ("bullets", [
         "Confidence is measured, never invented. Every number is an accuracy actually "
         "observed on validation for that question type and land-cover class. Where no "
@@ -163,10 +192,11 @@ BLOCKS: List[Any] = [
         "cannot contradict the text.",
     ]),
 
-    ("h1", "7. Known gaps"),
+    ("h1", "8. Known gaps"),
     ("bullets", [
         "Remote-sensing fine-tuning on branch 1 has not been run. Mandatory.",
-        "Optical-SAR paired analysis is not started. Mandatory.",
+        "Branch 3 optical-SAR is architecturally complete but has never been trained on "
+        "real data, so it has no measured capability. Mandatory scope.",
         "Branch 1 has no measured accuracy on any benchmark.",
         "Branch 2 under-predicts rare classes: water at 0.21x true frequency, playgrounds "
         "never predicted. Declared in the tool descriptor and reflected in its confidence.",
