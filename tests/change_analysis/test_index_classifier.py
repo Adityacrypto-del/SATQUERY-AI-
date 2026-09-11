@@ -1,4 +1,17 @@
+"""Producer B unit tests (originally from aditya/producer-b).
+
+Migrated to the IndexClassification result object. classify_pair returned a
+bare (s_t1, s_t2, trace) tuple; it now returns a structured result, because a
+SAR pair has no semantic maps to put in those slots and zero-filled arrays
+would assert "nothing changed" rather than "cannot say". Each test keeps its
+original intent; only the accessor changed.
+
+The contract tests for the four review defects live in
+test_index_classifier_contract.py.
+"""
+
 import numpy as np
+import pytest
 
 from tools.change_analysis.io import RSImage
 from tools.change_analysis.index_classifier import (
@@ -44,7 +57,8 @@ def test_output_shape_and_dtype():
     t1 = make_optical_image()
     t2 = make_optical_image()
 
-    s_t1, s_t2, trace = classify_pair(t1, t2)
+    result = classify_pair(t1, t2)
+    s_t1, s_t2 = result.s_t1, result.s_t2
 
     assert s_t1.shape == (8, 8)
     assert s_t2.shape == (8, 8)
@@ -62,7 +76,7 @@ def test_missing_swir_skips_ndbi():
     t1 = make_optical_image(band_names=band_names)
     t2 = make_optical_image(band_names=band_names)
 
-    _, _, trace = classify_pair(t1, t2)
+    trace = classify_pair(t1, t2).trace
 
     assert "ndvi" in trace["indices"]
     assert "ndwi" in trace["indices"]
@@ -75,7 +89,7 @@ def test_missing_nir_skips_ndvi_and_ndwi():
     t1 = make_optical_image(band_names=band_names)
     t2 = make_optical_image(band_names=band_names)
 
-    _, _, trace = classify_pair(t1, t2)
+    trace = classify_pair(t1, t2).trace
 
     assert "ndvi" not in trace["indices"]
     assert "ndwi" not in trace["indices"]
@@ -91,10 +105,17 @@ def test_sar_only_has_no_semantic_class_assignment():
     t1 = make_sar_image(values)
     t2 = make_sar_image(values * 2)
 
-    s_t1, s_t2, trace = classify_pair(t1, t2)
+    result = classify_pair(t1, t2)
+    trace = result.trace
 
-    assert np.all(s_t1 == 0)
-    assert np.all(s_t2 == 0)
+    # Was: all-zero maps. Zero means "unchanged" to every downstream rule,
+    # so zero-filling here asserted that nothing changed on a pair where
+    # change was in fact detected. The maps are now absent instead.
+    assert result.semantic_available is False
+    assert result.s_t1 is None
+    assert result.s_t2 is None
+    with pytest.raises(ValueError):
+        result.require_semantic()
 
     assert trace["producer"] == "index_classifier"
     assert trace["note"] == (
@@ -121,7 +142,8 @@ def test_playgrounds_are_never_predicted():
     t1 = make_optical_image(values=t1_values)
     t2 = make_optical_image(values=t2_values)
 
-    s_t1, s_t2, _ = classify_pair(t1, t2)
+    result = classify_pair(t1, t2)
+    s_t1, s_t2 = result.s_t1, result.s_t2
 
     assert not np.any(s_t1 == 6)
     assert not np.any(s_t2 == 6)
@@ -131,9 +153,9 @@ def test_confidence_is_below_producer_a_reference():
     t1 = make_optical_image()
     t2 = make_optical_image()
 
-    _, _, trace = classify_pair(t1, t2)
+    result = classify_pair(t1, t2)
 
-    assert trace["confidence"] < 0.90
+    assert result.confidence < 0.90
 
 
 def test_identical_pair_returns_all_zero_maps():
@@ -151,7 +173,8 @@ def test_identical_pair_returns_all_zero_maps():
     t1 = make_optical_image(values=values)
     t2 = make_optical_image(values=values.copy())
 
-    s_t1, s_t2, _ = classify_pair(t1, t2)
+    result = classify_pair(t1, t2)
+    s_t1, s_t2 = result.s_t1, result.s_t2
 
     assert np.all(s_t1 == 0)
     assert np.all(s_t2 == 0)
@@ -161,7 +184,7 @@ def test_trace_records_available_indices():
     t1 = make_optical_image()
     t2 = make_optical_image()
 
-    _, _, trace = classify_pair(t1, t2)
+    trace = classify_pair(t1, t2).trace
 
     assert trace["producer"] == "index_classifier"
     assert "indices" in trace
@@ -196,10 +219,10 @@ def test_ndvi_classifies_elevated_vegetation():
         values=t2_values,
     )
 
-    _, _, trace = classify_pair(t1, t2)
+    trace = classify_pair(t1, t2).trace
 
     assert "ndvi" in trace["indices"]
-    assert trace["t1"]["class_splits"]["ndvi_tree_threshold"] is not None
+    assert trace["t1"]["class_splits"]["ndvi_trees_vs_low_vegetation"] is not None
 
 
 def test_ndwi_classifies_elevated_water():
@@ -227,7 +250,7 @@ def test_ndwi_classifies_elevated_water():
         values=t2_values,
     )
 
-    _, _, trace = classify_pair(t1, t2)
+    trace = classify_pair(t1, t2).trace
 
     assert "ndwi" in trace["indices"]
     assert trace["t1"]["thresholds"]["ndwi"] is not None
@@ -276,7 +299,7 @@ def test_trace_records_ambiguous_index_overlap():
         values=t2_values,
     )
 
-    _, _, trace = classify_pair(t1, t2)
+    trace = classify_pair(t1, t2).trace
 
     # At least one date must record the overlap ambiguity.
     ambiguity_t1 = trace["t1"]["ambiguity"]
@@ -300,12 +323,15 @@ def test_confidence_is_marked_as_conservative():
     t1 = make_optical_image()
     t2 = make_optical_image()
 
-    _, _, trace = classify_pair(t1, t2)
+    result = classify_pair(t1, t2)
 
-    assert "confidence" in trace
-    assert isinstance(trace["confidence"], (int, float))
-    assert 0 <= trace["confidence"] <= 1
+    assert isinstance(result.confidence, (int, float))
+    assert 0 <= result.confidence <= 1
+    # Was 0.50 with confidence_type "conservative_heuristic". A producer that
+    # has never been scored has no accuracy to report, so it reports zero and
+    # says why -- the same measured-or-zero rule the pipeline follows.
+    assert result.confidence == 0.0
+    assert "not calibrated" in result.confidence_basis
 
-    assert trace["producer"] == "index_classifier"
-    assert "physics-based approximation" in trace["note"]
-    assert trace["confidence_type"] == "conservative_heuristic"
+    assert result.trace["producer"] == "index_classifier"
+    assert "physics-based approximation" in result.trace["note"]
