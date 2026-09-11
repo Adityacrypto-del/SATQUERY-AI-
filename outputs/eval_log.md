@@ -59,3 +59,59 @@ on CDVQA accuracy.
 For reference, not comparison: the CDVQA paper's baseline reports ~58% average
 accuracy. 68.14% here is on the official Test split with the selection history
 above disclosed in full.
+
+---
+
+## Leakage findings (2026-09-11) — read before quoting any number above
+
+Two checks that should have run before entry 2 were run after it. Both
+qualify the numbers already recorded; neither invalidates them.
+
+### 1. Train/Test near-duplicates: real, small, bounded
+
+Pair-ID disjointness is perfect — `Train ∩ Test = 0`, so the ID assertions in
+`eval/run_cdvqa.py` and `segmentation/dataset.py` do their job. That check is
+necessary and not sufficient: SECOND's tiles are cut from a handful of
+cities, so two 512×512 tiles from the same block are near-duplicates with
+different IDs, and no ID check can see it.
+
+`scripts/check_split_leakage.py` compares every Train scene against every
+held-out scene by 64-bit difference hash, minimum over both dates, with a
+calibration distribution built from scenes known to be distinct.
+
+| split | scenes | nearest-Train min | median | ≤ 12 | calibration floor |
+|---|---|---|---|---|---|
+| Val | 400 | 10 | 16 | 11 (2.8%) | 13 |
+| Test | 968 | **0** | 16 | 13 (1.3%) | 12 |
+| Test2 | 968 | **0** | 16 | 13 (1.3%) | 12 |
+
+13 Test scenes sit at or below the calibration floor, including exact hash
+matches. **Bound on the effect:** if all 13 were perfectly memorised and
+would otherwise have scored at the split average, the inflation is
+13/968 × (100 − 68.14) ≈ **0.43 points**. So the true figure is
+**≥ 67.7% AA**. (Approximate — AA is averaged per question type, not per
+scene — but the contaminated fraction is small enough that the ordering of
+conclusions does not change.)
+
+Entry 2's 68.14% stands, with that bound stated alongside it.
+
+### 2. Test2 is not an independent holdout — the protocol assumed wrong
+
+| | questions | scenes |
+|---|---|---|
+| Test | 39,686 | 968 |
+| Test2 | 31,036 | **the same 968** |
+
+The scene sets are identical, and 5,028 (scene, question, answer) triples
+appear in both. **Test2 is a question-level resample over the same imagery,
+not a second image-level holdout.**
+
+The protocol at the top of this file reserves Test2 as a pristine final
+measurement. That independence does not exist: every Test evaluation has
+already seen 100% of Test2's imagery. Test2 still measures something real —
+generalisation to unseen *questions* about seen scenes — but it cannot
+support a claim of unseen-imagery generalisation, and the writeup must say
+which of the two it is.
+
+This does not change the budget, which remains 1 of 3 Test evaluations spent
+and Test2 untouched. It changes what spending them buys.

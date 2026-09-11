@@ -1,0 +1,102 @@
+{
+  "n_train": 1600,
+  "splits": {
+    "Val": {
+      "n_scenes": 400,
+      "nearest_min": 10,
+      "nearest_median": 16.0,
+      "nearest_p5": 13.0,
+      "calibration_min": 13,
+      "calibration_median": 19.0,
+      "counts_at_or_below": {
+        "0": 0,
+        "2": 0,
+        "4": 0,
+        "6": 0,
+        "8": 0,
+        "10": 4,
+        "12": 11
+      },
+      "fraction_at_or_below_12": 0.0275,
+      "suspect_scenes": [
+        "10266.png",
+        "07243.png",
+        "04564.png",
+        "03485.png",
+        "00787.png",
+        "01849.png",
+        "03418.png",
+        "03486.png",
+        "08290.png",
+        "00932.png",
+        "02332.png"
+      ]
+    },
+    "Test": {
+      "n_scenes": 968,
+      "nearest_min": 0,
+      "nearest_median": 16.0,
+      "nearest_p5": 14.0,
+      "calibration_min": 12,
+      "calibration_median": 18.0,
+      "counts_at_or_below": {
+        "0": 1,
+        "2": 1,
+        "4": 1,
+        "6": 1,
+        "8": 1,
+        "10": 2,
+        "12": 13
+      },
+      "fraction_at_or_below_12": 0.013429752066115703,
+      "suspect_scenes": [
+        "04063.png",
+        "04213.png",
+        "09075.png",
+        "08070.png",
+        "02768.png",
+        "07997.png",
+        "03179.png",
+        "01701.png",
+        "08059.png",
+        "01876.png",
+        "10183.png",
+        "01709.png",
+        "00162.png"
+      ]
+    },
+    "Test2": {
+      "n_scenes": 968,
+      "nearest_min": 0,
+      "nearest_median": 16.0,
+      "nearest_p5": 14.0,
+      "calibration_min": 12,
+      "calibration_median": 18.0,
+      "counts_at_or_below": {
+        "0": 1,
+        "2": 1,
+        "4": 1,
+        "6": 1,
+        "8": 1,
+        "10": 2,
+        "12": 13
+      },
+      "fraction_at_or_below_12": 0.013429752066115703,
+      "suspect_scenes": [
+        "04063.png",
+        "04213.png",
+        "09075.png",
+        "08070.png",
+        "02768.png",
+        "07997.png",
+        "03179.png",
+        "01701.png",
+        "08059.png",
+        "01876.png",
+        "10183.png",
+        "01709.png",
+        "00162.png"
+      ]
+    }
+  }
+}
