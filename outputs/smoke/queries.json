@@ -1,0 +1,40 @@
+{
+  "note": "Hand-written for smoke testing. Styled after CDVQA phrasing but NOT copied from any CDVQA question record, so no held-out image is coupled to a benchmark item. These are qualitative sanity checks and are NOT scored - they have no known-correct answers.",
+  "queries": [
+    {
+      "id": "q1_change_or_not",
+      "text": "Have the areas of buildings changed?",
+      "checks": "routes to change_or_not; yes/no from the 19-way vocabulary"
+    },
+    {
+      "id": "q2_change_to_what",
+      "text": "What have the regions of low vegetation in the first image mainly changed to?",
+      "checks": "routes to change_to_what; a land-cover class or None, never invented"
+    },
+    {
+      "id": "q3_increase",
+      "text": "Did the regions of non-vegetated ground surface increase?",
+      "checks": "routes to increase_or_not; area comparison across dates"
+    },
+    {
+      "id": "q4_open_ended",
+      "text": "What changed and where?",
+      "checks": "names no class, so must NOT route to a rule; template description instead"
+    },
+    {
+      "id": "q5_absent_class",
+      "text": "Have the areas of playgrounds changed?",
+      "checks": "playgrounds are the rarest class and likely absent; must answer honestly, not fabricate"
+    },
+    {
+      "id": "q6_scene_ratio",
+      "text": "What is the percentage of changed areas?",
+      "checks": "routes to change_ratio; one of the 11 bins"
+    },
+    {
+      "id": "q7_compound",
+      "text": "What did low vegetation and water change into?",
+      "checks": "names two classes; must answer once per class and must NOT collapse them into a single one of the 19 tokens"
+    }
+  ]
+}

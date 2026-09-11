@@ -42,8 +42,12 @@ __all__ = [
     "CLASS_NAMES",
     "NAME_TO_CLASS",
     "PALETTE",
+    "answer_compound",
     "answer_question",
     "class_areas",
+    "CompoundAnswer",
+    "is_compound",
+    "parse_targets",
     "decode_label",
     "parse_question",
     "question_side",
@@ -222,6 +226,7 @@ def answer_question(
     s_t1: np.ndarray,
     s_t2: np.ndarray,
     stats: Optional["SceneStats"] = None,
+    target: Optional[str] = None,
 ) -> CDVQAAnswer:
     """Apply the CDVQA rule for ``question_type`` to two semantic change maps.
 
@@ -232,7 +237,11 @@ def answer_question(
     failure HARD RULE 3 forbids.
     """
     parsed = parse_question(question, question_type)
-    target = parsed["target"]
+    # An explicit target overrides the one parsed from the text. Compound
+    # questions name several classes and answer the same rule once per
+    # class; routing them back through this function keeps a single
+    # implementation of every rule rather than a second, weaker one.
+    target = target if target is not None else parsed["target"]
     side = parsed["side"]
     cls = NAME_TO_CLASS.get(target) if target else None
 
@@ -388,3 +397,108 @@ def classify_question(text: str) -> Optional[str]:
                 continue
             return question_type
     return None
+
+
+# --------------------------------------------------------------------------
+# Compound (multi-class) questions
+# --------------------------------------------------------------------------
+
+
+def parse_targets(text: str) -> List[str]:
+    """Every land-cover class named in ``text``, in order of appearance.
+
+    Where two phrases overlap the longer one wins, so "trees" is not also
+    counted as "tree" and "non-vegetated ground surface" is not split apart.
+    A class named twice is listed once.
+
+    Note what is deliberately absent: a bare "vegetation" maps to nothing.
+    It is ambiguous between low vegetation and trees, and CDVQA names the
+    class "low vegetation", so guessing which was meant would answer a
+    question the user did not ask (HARD RULE 3). Such a question falls
+    through to the region-attribute description instead.
+    """
+    lowered = str(text).lower()
+    spans: List[Tuple[int, int, str]] = []
+    for phrase, name in _CLASS_PHRASES:
+        start = 0
+        while True:
+            found = lowered.find(phrase, start)
+            if found < 0:
+                break
+            spans.append((found, found + len(phrase), name))
+            start = found + 1
+
+    taken: List[Tuple[int, int]] = []
+    kept: List[Tuple[int, str]] = []
+    # Longest first, so a longer phrase claims its span before any shorter
+    # phrase nested inside it can.
+    for begin, end, name in sorted(spans, key=lambda s: (s[0] - s[1], s[0])):
+        if any(begin < t_end and end > t_begin for t_begin, t_end in taken):
+            continue
+        taken.append((begin, end))
+        kept.append((begin, name))
+
+    ordered: List[str] = []
+    for _, name in sorted(kept):
+        if name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
+def is_compound(text: str) -> bool:
+    """True when a question names more than one land-cover class."""
+    return len(parse_targets(text)) > 1
+
+
+@dataclass
+class CompoundAnswer:
+    """One answer per land-cover class named in the question.
+
+    There is deliberately no single ``answer`` field. CDVQA's 19-token
+    vocabulary has no term for a combined result, and no rule for combining
+    one: asked "have low vegetation and water changed?" where one did and one
+    did not, both "yes" (any) and "no" (all) are defensible readings and the
+    benchmark specifies neither. Collapsing them would be inventing benchmark
+    semantics, so the per-class answers are reported as they are and the
+    caller decides what to show.
+    """
+
+    targets: List[str]
+    answers: List[CDVQAAnswer]
+    question_type: str = ""
+
+    def summary(self) -> str:
+        """One line per class, for the trace and the rendered response."""
+        if not self.answers:
+            return "no land-cover class named in the question"
+        return "; ".join(
+            f"{target.replace('_', ' ')}: {sub.answer if sub.answer is not None else 'no answer'}"
+            for target, sub in zip(self.targets, self.answers)
+        )
+
+
+def answer_compound(
+    question: str,
+    question_type: str,
+    s_t1: np.ndarray,
+    s_t2: np.ndarray,
+    stats: Optional["SceneStats"] = None,
+) -> CompoundAnswer:
+    """Apply one CDVQA rule once per class named in ``question``.
+
+    Single-class questions are not a special case -- they come back as a
+    one-entry :class:`CompoundAnswer` -- so the caller has one code path.
+
+    Scene statistics are computed once and shared across the classes; the
+    rules differ only in which class they read.
+    """
+    targets = parse_targets(question)
+    if stats is None:
+        stats = scene_stats(s_t1, s_t2)
+    answers = [
+        answer_question(question, question_type, s_t1, s_t2, stats=stats, target=t)
+        for t in targets
+    ]
+    return CompoundAnswer(
+        targets=targets, answers=answers, question_type=question_type
+    )

@@ -55,6 +55,9 @@ def run_case(case_id, t1_path, t2_path, query, modality="optical",
         "route": extras.get("route"),
         "question_type": extras.get("question_type"),
         "answer": result.answer,
+        # Per-class answers for a compound question. None for every
+        # single-class case, so an unexpected value here is visible.
+        "compound_per_class": (extras.get("answer_evidence") or {}).get("per_class"),
         "changed": result.changed,
         "change_type": result.change_type,
         "confidence": result.confidence,
@@ -117,6 +120,13 @@ def main(argv=None) -> int:
             dict(case_id="C6_second_held_out_absent_class",
                  t1_path=f"{spare}/im1/{safe[2]}", t2_path=f"{spare}/im2/{safe[2]}",
                  query=queries["q5_absent_class"], checkpoint=args.checkpoint),
+            # Two classes named at once. The trap is the same shape as C6's:
+            # CDVQA has no token for a combined answer, so the honest output
+            # is one answer per class and a null single answer -- not a token
+            # picked to fill the slot.
+            dict(case_id="C7_second_held_out_compound",
+                 t1_path=f"{spare}/im1/{safe[1]}", t2_path=f"{spare}/im2/{safe[1]}",
+                 query=queries["q7_compound"], checkpoint=args.checkpoint),
         ]
 
     results = []

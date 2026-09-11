@@ -26,7 +26,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .cdvqa import answer_question, classify_question, parse_question
+from .cdvqa import (
+    answer_compound,
+    answer_question,
+    classify_question,
+    is_compound,
+    parse_question,
+)
 from .detector import detect_change_stack, index_stack
 from .indices import available_indices
 from .io import RSImage, georeferencing_report
@@ -300,7 +306,32 @@ class BiTemporalPipeline:
             "fall back to a region summary rather than inventing a label.",
             {"query": query, "question_type": question_type},
         ) as st:
-            if question_type and s_t1 is not None:
+            compound_summary: Optional[str] = None
+            if question_type and s_t1 is not None and is_compound(query):
+                # Several classes named at once. Each is answered by the same
+                # rule, but `answer` stays None: CDVQA has no token for a
+                # combined result and no rule for combining one, so the
+                # per-class answers are reported as they are rather than
+                # collapsed into a single fabricated token.
+                outcome = answer_compound(query, question_type, s_t1, s_t2)
+                compound_summary = outcome.summary()
+                answer_evidence = {
+                    "compound": True,
+                    "targets": outcome.targets,
+                    "per_class": {
+                        target: sub.answer
+                        for target, sub in zip(outcome.targets, outcome.answers)
+                    },
+                    "per_class_evidence": {
+                        target: sub.evidence
+                        for target, sub in zip(outcome.targets, outcome.answers)
+                    },
+                }
+                st.observation = (
+                    f"compound question over {len(outcome.targets)} classes; "
+                    f"{compound_summary}. No single CDVQA token applies."
+                )
+            elif question_type and s_t1 is not None:
                 outcome = answer_question(query, question_type, s_t1, s_t2)
                 answer = outcome.answer
                 answer_evidence = outcome.evidence
@@ -321,6 +352,10 @@ class BiTemporalPipeline:
         from .describe import describe_change
 
         description = describe_change(regions, summary_stats, t1, s_t1, s_t2)
+        if compound_summary:
+            # The per-class answers are the response to a compound question;
+            # the region description is context for them.
+            description = f"{compound_summary}. {description}"
 
         # 7 -- overlay evidence
         overlay_paths: Dict[str, str] = {}
