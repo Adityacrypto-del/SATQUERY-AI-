@@ -1,0 +1,101 @@
+# Branch 1 adaptation on BigEarthNet.txt. TerraQ-VL's Stage-2 recipe, pointed at BigEarthNet data,
+# sized for a single 16 GB NVIDIA T4. PREPARED, NOT RUN. Every result is NOT_YET_MEASURED.
+#
+# ARCHITECTURE DECISION (final, confirmed by the user 2026-09-12): TerraQ-VL recipe on BigEarthNet
+# data, not Qwen2-VL-7B / satquery/adaptation/train_lora.py. TerraQ-VL is the only candidate with
+# measured numbers and a leakage-checked split behind it.
+#   CLIP ViT-L/14 (frozen) -> MLP connector (trained) -> Qwen2.5-3B-Instruct (frozen) + LoRA (trained)
+#
+# Differences from TerraQ-VL's configs/finetune_vrsbench_stage2.yaml (@ 48f8d9b), each for a stated reason:
+#   precision        bf16 -> fp16. A T4 (Turing) has no bf16. TerraQ-VL's train.py has no fp16 path,
+#                    so launch through reference/terraq_vl/train_t4.py. It sets Accelerate
+#                    mixed_precision="fp16" (autocast + GradScaler) and refuses non-fp32 trainables.
+#   LLM dtype        bfloat16 -> float16 (frozen base weights; same memory as bf16).
+#   batch            8 x 8 -> 1 x 64. The effective batch stays 64, so the recipe's LR is unchanged.
+#   max_length       512 -> 570. Measured, not guessed: on the 78,974 guarded train records, TerraQ-VL's
+#                    chat template + Qwen tokenizer give p50 51, p99 279, max 570 text tokens
+#                    (captions max 570, mcq max 134, binary max 72). 570 truncates nothing. Lowering it
+#                    would only clip captions and saves almost nothing, since batches pad to the longest
+#                    item. Re-measure if --n-patches changes.
+#   workers          16 -> 4 (typical T4 hosts have 2-4 vCPUs).
+#   data / warm start / output dir: BigEarthNet paths; TerraQ-VL Stage-1 connector.
+#
+# T4 VRAM -- ESTIMATE ONLY, NOT A MEASUREMENT:
+#   LLM fp16 weights ~6.2 GB + CLIP-L fp32 ~1.2 GB + connector/LoRA fp32 params, grads and AdamW
+#   states ~0.4 GB + fp32 logits/loss for up to 826 positions x 151k vocab ~1 GB + checkpointed
+#   activations at batch 1. That lands under the T4's 15 GB usable, but it is arithmetic, not a
+#   run. The laptop cannot verify it: 6 GB does not hold the fp16 3B weights. The verification is
+#   step 4 below, `--pilot-steps 50` on the T4, which writes pilot_t4.json.
+#   If that OOMs, first try max_length at the p99 (279, captions truncated, disclosed), then a
+#   4-bit QLoRA LLM (a different recipe; report it as such).
+#
+# fp16 risk: Qwen2.5 was trained in bf16. fp16 has a smaller range, so activations can overflow.
+#   GradScaler skips inf/NaN gradient steps, but a non-finite *loss* is a real failure. The pilot
+#   counts non-finite losses. Any non-zero count means stop and reassess, not continue.
+#
+# Launch sequence (cloud T4):
+#   0. git clone https://github.com/crimsonKn1ght/terraq-vl && git -C terraq-vl checkout 48f8d9b88559aeacec324d3aa212e91101dba887
+#      pip install -r terraq-vl/requirements.txt  (plus this repo's requirements.txt)
+#   1. python -m satquery.adaptation.prepare_instructions --source bigearthnet_txt \
+#        --ben-parquet data/bigearthnet_txt/BigEarthNet.txt.parquet --n-patches 5000 \
+#        --out data/ben_instructions --allow-unchecked vrsbench --allow-unchecked rsvqa
+#      (verified locally 2026-09-12: 78,974 records / 5,000 patches, 0 overlaps vs 234,930 eval patches)
+#   2. python reference/terraq_vl/export_ben_llava.py --instructions-dir data/ben_instructions \
+#        --ben-parquet data/bigearthnet_txt/BigEarthNet.txt.parquet --out datasets/ben_llava
+#   3. huggingface-cli download grKnight/terraq-vl --include "stage-1/checkpoints/checkpoint-3270/*" --local-dir checkpoints/terraq-vl
+#   4. PILOT: TERRAQ_REPO=terraq-vl python reference/terraq_vl/train_t4.py \
+#        --config reference/terraq_vl/configs/finetune_ben_stage2_t4.yaml --pilot-steps 50
+#      Read checkpoints/ben-stage2/pilot_t4.json (peak VRAM, samples/s, non-finite losses). Size
+#      --n-patches to the time budget from the measured samples/s.
+#   5. Full run: the same command without --pilot-steps.
+#   6. Evaluate with reference/terraq_vl/run_bigearthnet_eval.py on the same bench split as today's
+#      zero-shot TerraQ-VL reference, so the two numbers are directly comparable.
+#
+# Licensing: a derivative of Qwen2.5-3B-Instruct, so the Qwen Research License applies
+# (non-commercial). The warm-start connector was trained on VRSBench (CC-BY-NC-4.0).
+#
+# Scope: the model still sees an RGB render only (CLIP has 3 input channels). This adapts to
+# BigEarthNet's domain and question types. It does NOT make the model use NIR/SWIR/SAR. Those
+# questions go to satquery/tools/spectral_index.py.
+vision_encoder:
+  model_name: openai/clip-vit-large-patch14
+  select_layer: -2
+  select_feature: patch
+language_model:
+  model_name: Qwen/Qwen2.5-3B-Instruct
+  torch_dtype: float16
+  lora:
+    r: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+connector:
+  vision_hidden_size: 1024
+  llm_hidden_size: 2048
+# Warm start: TerraQ-VL's released Stage-1 connector (VRSBench-aligned). The LoRA starts fresh, so
+# everything the LLM learns comes from BigEarthNet.txt, not from TerraQ-VL's Stage-2 VRSBench LoRA.
+stage1_checkpoint: ./checkpoints/terraq-vl/stage-1/checkpoints/checkpoint-3270
+data:
+  train_data_path: datasets/ben_llava/train.json
+  image_dir: datasets/ben_llava/images
+  val_data_path: datasets/ben_llava/val.json     # BigEarthNet.txt `validation` split, disjoint from bench
+  max_length: 570
+training:
+  stage: 2
+  output_dir: ./checkpoints/ben-stage2
+  num_epochs: 1
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 64   # 1 x 64 = 64, the recipe's effective batch, so LR is unchanged
+  gradient_checkpointing: true
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  bf16: false
+  fp16: true                        # read by train_t4.py; TerraQ-VL's train.py ignores this key
+  dataloader_num_workers: 4
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  eval_num_samples: 512
+  seed: 42
