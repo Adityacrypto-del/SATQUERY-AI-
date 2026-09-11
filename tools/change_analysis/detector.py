@@ -30,7 +30,8 @@ from skimage.filters import threshold_otsu
 from .indices import available_indices, index_by_name
 from .io import RSImage
 
-__all__ = ["DetectionResult", "detect_change", "otsu_threshold"]
+__all__ = ["CLASS_INDEX_ROUTE", "DetectionResult", "detect_change",
+           "detect_change_stack", "index_stack", "otsu_threshold"]
 
 # Guards 0/0 in the SAR ratio. Small relative to any physical backscatter
 # value, and its only role is to keep the operator finite.
@@ -49,6 +50,7 @@ class DetectionResult:
     index_name: Optional[str]
     n_valid: int
     note: Optional[str] = None
+    indices_available: Optional[list] = None
 
     def as_trace_params(self) -> dict:
         """The subset a trace entry should record."""
@@ -60,6 +62,7 @@ class DetectionResult:
             "n_valid_pixels": self.n_valid,
             "n_changed_pixels": int(self.mask.sum()),
             "note": self.note,
+            "indices_available": self.indices_available,
         }
 
 
@@ -100,10 +103,16 @@ def _change_magnitude(
     if chosen is None:
         options = available_indices(t1)
         if not options:
-            raise ValueError(
-                "no optical index is computable from the declared bands "
-                f"{t1.band_names!r}; pass index= explicitly or name the bands"
-            )
+            # Plain RGB has no NIR, so no normalised index is computable.
+            # Differencing band brightness is a genuinely weaker operator --
+            # it does not cancel illumination the way an index ratio does --
+            # so it is named honestly rather than dressed up as an index, and
+            # the trace records that no index was available.
+            a = np.nanmean(t1.array, axis=0).astype(np.float32)
+            b = np.nanmean(t2.array, axis=0).astype(np.float32)
+            magnitude = np.abs(b - a)
+            magnitude[~np.isfinite(magnitude)] = np.nan
+            return magnitude, "band_difference_no_index_available", None
         # NDVI first when available: it is the most broadly informative of
         # the three for land-cover change.
         chosen = "ndvi" if "ndvi" in options else options[0]
@@ -168,3 +177,122 @@ def detect_change(
         n_valid=n_valid,
         note=note,
     )
+
+
+# --------------------------------------------------------------------------
+# Evidence stack: several indices at once, routed by what was asked
+# --------------------------------------------------------------------------
+
+# Which index is diagnostic for each land-cover class. Vegetation classes
+# read off NDVI, water off NDWI, and the built/bare classes off NDBI --
+# these are the indices each class was designed to separate, not arbitrary
+# assignments.
+CLASS_INDEX_ROUTE: dict = {
+    "trees": "ndvi",
+    "low_vegetation": "ndvi",
+    "water": "ndwi",
+    "buildings": "ndbi",
+    "NVG_surface": "ndbi",
+    "playgrounds": "ndbi",
+}
+
+
+def index_stack(image: RSImage) -> dict:
+    """Every index this image's bands support, as ``{name: (H, W) array}``.
+
+    Empty for SAR and for plain RGB, which has no NIR and therefore supports
+    no normalised index at all.
+    """
+    return {name: index_by_name(image, name) for name in available_indices(image)}
+
+
+def detect_change_stack(
+    t1: RSImage,
+    t2: RSImage,
+    target_class: Optional[str] = None,
+    index: Optional[str] = None,
+) -> DetectionResult:
+    """Detect change using every available index, routed by the question.
+
+    When the query names a land-cover class, the index diagnostic for that
+    class answers it -- asking about water should be decided by NDWI, not by
+    whichever index happens to move most. When no class is named, the
+    per-pixel maximum across the stack is used, so a change visible in any
+    one index survives rather than being averaged away by the others.
+
+    Falls back to :func:`detect_change` when no index is computable, so RGB
+    and SAR input still work; the operator recorded then says which weaker
+    path was taken.
+    """
+    if t1.shape != t2.shape:
+        raise ValueError(
+            f"t1 and t2 must have the same spatial shape; "
+            f"got {t1.shape} and {t2.shape}"
+        )
+    if t1.modality != t2.modality:
+        raise ValueError(
+            f"t1 and t2 must share a modality; got {t1.modality!r} and "
+            f"{t2.modality!r}."
+        )
+
+    stack1 = index_stack(t1)
+    available = sorted(stack1)
+    note = None
+
+    if not available:
+        result = detect_change(t1, t2, index=index)
+        result.note = (result.note or "") + " no_index_available_for_stack"
+        return result
+
+    if index is not None:
+        chosen = index
+        operator = "index_difference"
+    elif target_class is not None:
+        wanted = CLASS_INDEX_ROUTE.get(target_class)
+        if wanted in stack1:
+            chosen = wanted
+            operator = "index_difference_routed_by_class"
+        else:
+            # The diagnostic index for that class needs a band this image
+            # does not carry. Say so rather than silently answering with a
+            # different index as though it were the right one.
+            chosen = available[0]
+            operator = "index_difference_routed_by_class"
+            note = (
+                f"fallback: {target_class!r} is best read from {wanted!r}, which "
+                f"needs bands this image lacks; used {chosen!r} instead"
+            )
+    else:
+        chosen = None
+        operator = "index_difference_max_across_stack"
+
+    stack2 = index_stack(t2)
+    if chosen is not None:
+        magnitude = np.abs(stack2[chosen] - stack1[chosen]).astype(np.float32)
+    else:
+        # Per-pixel max: a change seen by any single index is preserved.
+        layers = [np.abs(stack2[n] - stack1[n]) for n in available]
+        magnitude = np.nanmax(np.stack(layers), axis=0).astype(np.float32)
+
+    valid = t1.valid_mask & t2.valid_mask & np.isfinite(magnitude)
+    threshold = otsu_threshold(np.where(valid, magnitude, np.nan))
+    if threshold is None:
+        mask = np.zeros(magnitude.shape, dtype=bool)
+        note = (note or "") + (
+            " no_valid_pixels" if not valid.any() else " degenerate_histogram_no_change"
+        )
+    else:
+        mask = (magnitude > threshold) & valid
+
+    result = DetectionResult(
+        change_map=magnitude,
+        mask=mask,
+        valid_mask=valid,
+        threshold=threshold,
+        operator=operator,
+        index_name=chosen,
+        n_valid=int(valid.sum()),
+        note=note,
+    )
+    result.indices_available = available
+    return result

@@ -35,6 +35,13 @@ class Region:
     centroid_rowcol: Tuple[float, float]
     centroid_lonlat: Optional[Tuple[float, float]]
     bbox: Tuple[int, int, int, int]  # (row_min, col_min, row_max, col_max)
+    # Mean spectral index values inside the region, before and after. This is
+    # the region's spectral signature: it lets a reader see *what kind* of
+    # change happened (NDVI collapsing and NDBI rising reads as vegetation
+    # lost to construction) rather than only that something changed. None
+    # when no index stack was supplied.
+    signature_t1: Optional[Dict[str, float]] = None
+    signature_t2: Optional[Dict[str, float]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -45,6 +52,7 @@ def extract_regions(
     image: RSImage,
     min_pixels: int = 1,
     connectivity: int = 1,
+    index_stacks: Optional[Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]] = None,
 ) -> List[Region]:
     """Extract per-region attributes from a binary change mask.
 
@@ -80,6 +88,18 @@ def extract_regions(
     boxes = ndimage.find_objects(labels)
 
     pixel_area = image.pixel_area_m2
+    stack_t1, stack_t2 = index_stacks if index_stacks else (None, None)
+
+    def _signature(stack, region_mask):
+        """Mean index values over the region, ignoring NaN."""
+        if not stack:
+            return None
+        out: Dict[str, float] = {}
+        for name, plane in stack.items():
+            values = plane[region_mask]
+            values = values[np.isfinite(values)]
+            out[name] = float(values.mean()) if values.size else float("nan")
+        return out
 
     regions: List[Region] = []
     for position, label in enumerate(indices):
@@ -88,6 +108,7 @@ def extract_regions(
             continue
         row, col = centroids[position]
         row_slice, col_slice = boxes[position]
+        region_mask = labels == label
         regions.append(
             Region(
                 label=label,
@@ -99,6 +120,8 @@ def extract_regions(
                     int(row_slice.start), int(col_slice.start),
                     int(row_slice.stop), int(col_slice.stop),
                 ),
+                signature_t1=_signature(stack_t1, region_mask),
+                signature_t2=_signature(stack_t2, region_mask),
             )
         )
 
