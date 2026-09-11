@@ -395,5 +395,229 @@
       }
     ]
   },
+  "per_target_class": {
+    "change_or_not": {
+      "NVG_surface": {
+        "n": 944,
+        "accuracy": 0.9290254237288136,
+        "standard_error": 0.008357554293282275,
+        "usable": true
+      },
+      "buildings": {
+        "n": 951,
+        "accuracy": 0.8990536277602523,
+        "standard_error": 0.009768950263173386,
+        "usable": true
+      },
+      "low_vegetation": {
+        "n": 956,
+        "accuracy": 0.7949790794979079,
+        "standard_error": 0.013057137977110937,
+        "usable": true
+      },
+      "playgrounds": {
+        "n": 981,
+        "accuracy": 0.9439347604485219,
+        "standard_error": 0.007344856700062855,
+        "usable": true
+      },
+      "trees": {
+        "n": 969,
+        "accuracy": 0.6904024767801857,
+        "standard_error": 0.014852105334075,
+        "usable": true
+      },
+      "water": {
+        "n": 950,
+        "accuracy": 0.8157894736842105,
+        "standard_error": 0.012577214498334063,
+        "usable": true
+      }
+    },
+    "change_ratio_types": {
+      "NVG_surface": {
+        "n": 400,
+        "accuracy": 0.725,
+        "standard_error": 0.02232571387436469,
+        "usable": true
+      },
+      "buildings": {
+        "n": 404,
+        "accuracy": 0.7475247524752475,
+        "standard_error": 0.02161381897246353,
+        "usable": true
+      },
+      "low_vegetation": {
+        "n": 394,
+        "accuracy": 0.6142131979695431,
+        "standard_error": 0.02452365197346553,
+        "usable": true
+      },
+      "playgrounds": {
+        "n": 401,
+        "accuracy": 0.972568578553616,
+        "standard_error": 0.008156654881897431,
+        "usable": true
+      },
+      "trees": {
+        "n": 403,
+        "accuracy": 0.6426799007444168,
+        "standard_error": 0.023871161932733136,
+        "usable": true
+      },
+      "water": {
+        "n": 407,
+        "accuracy": 0.8378378378378378,
+        "standard_error": 0.01827079914879919,
+        "usable": true
+      }
+    },
+    "change_to_what": {
+      "NVG_surface": {
+        "n": 377,
+        "accuracy": 0.7400530503978779,
+        "standard_error": 0.022589317737548898,
+        "usable": true
+      },
+      "buildings": {
+        "n": 321,
+        "accuracy": 0.5077881619937694,
+        "standard_error": 0.027903892945878972,
+        "usable": true
+      },
+      "low_vegetation": {
+        "n": 298,
+        "accuracy": 0.6644295302013423,
+        "standard_error": 0.027353203657489066,
+        "usable": true
+      },
+      "playgrounds": {
+        "n": 16,
+        "accuracy": 0.0,
+        "standard_error": 7.905694150420949e-06,
+        "usable": false
+      },
+      "trees": {
+        "n": 154,
+        "accuracy": 0.3961038961038961,
+        "standard_error": 0.039411712906883535,
+        "usable": true
+      },
+      "water": {
+        "n": 73,
+        "accuracy": 0.1643835616438356,
+        "standard_error": 0.04337817238884326,
+        "usable": false
+      }
+    },
+    "decrease_or_not": {
+      "NVG_surface": {
+        "n": 313,
+        "accuracy": 0.8434504792332268,
+        "standard_error": 0.02053919873585035,
+        "usable": true
+      },
+      "buildings": {
+        "n": 319,
+        "accuracy": 0.9278996865203761,
+        "standard_error": 0.014481840133575294,
+        "usable": true
+      },
+      "low_vegetation": {
+        "n": 324,
+        "accuracy": 0.7438271604938271,
+        "standard_error": 0.024251022366479694,
+        "usable": true
+      },
+      "playgrounds": {
+        "n": 308,
+        "accuracy": 0.961038961038961,
+        "standard_error": 0.011025807448141451,
+        "usable": true
+      },
+      "trees": {
+        "n": 323,
+        "accuracy": 0.739938080495356,
+        "standard_error": 0.02440814698837674,
+        "usable": true
+      },
+      "water": {
+        "n": 335,
+        "accuracy": 0.8417910447761194,
+        "standard_error": 0.019938628353760927,
+        "usable": true
+      }
+    },
+    "increase_or_not": {
+      "NVG_surface": {
+        "n": 313,
+        "accuracy": 0.8402555910543131,
+        "standard_error": 0.020708391652765917,
+        "usable": true
+      },
+      "buildings": {
+        "n": 325,
+        "accuracy": 0.9261538461538461,
+        "standard_error": 0.014506539576585034,
+        "usable": true
+      },
+      "low_vegetation": {
+        "n": 329,
+        "accuracy": 0.7781155015197568,
+        "standard_error": 0.022908020642784827,
+        "usable": true
+      },
+      "playgrounds": {
+        "n": 314,
+        "accuracy": 0.9554140127388535,
+        "standard_error": 0.011647431717275015,
+        "usable": true
+      },
+      "trees": {
+        "n": 331,
+        "accuracy": 0.7099697885196374,
+        "standard_error": 0.02494178647803859,
+        "usable": true
+      },
+      "water": {
+        "n": 308,
+        "accuracy": 0.8766233766233766,
+        "standard_error": 0.018739051537766928,
+        "usable": true
+      }
+    }
+  },
+  "class_prediction_ratio": {
+    "NVG_surface": {
+      "predicted_share": 0.4442928868585259,
+      "true_share": 0.43339351737447557,
+      "ratio": 1.0251488982808958
+    },
+    "low_vegetation": {
+      "predicted_share": 0.385214706744352,
+      "true_share": 0.33729266449640294,
+      "ratio": 1.1420785190199716
+    },
+    "trees": {
+      "predicted_share": 0.0448341526847548,
+      "true_share": 0.06922631263856688,
+      "ratio": 0.6476461185912871
+    },
+    "buildings": {
+      "predicted_share": 0.1225711280137153,
+      "true_share": 0.14113172977457505,
+      "ratio": 0.8684873926614094
+    },
+    "water": {
+      "predicted_share": 0.0030871256986519813,
+      "true_share": 0.014442483617247894,
+      "ratio": 0.213753103722769
+    },
+    "playgrounds": {
+      "predicted_share": 0.0,
+      "true_share": 0.004513292098731669,
+      "ratio": 0.0
+    }
+  },
   "accuracy_spread_across_bins": 0.024906328217178197
 }

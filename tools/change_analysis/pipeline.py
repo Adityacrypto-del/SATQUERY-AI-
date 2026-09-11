@@ -132,7 +132,8 @@ class BiTemporalPipeline:
     # -- confidence -------------------------------------------------------
 
     def _confidence(
-        self, question_type: Optional[str], validation, route: str
+        self, question_type: Optional[str], validation, route: str,
+        target_class: Optional[str] = None,
     ) -> Tuple[float, str]:
         """Confidence from measured accuracy, or 0.0 with an explicit basis.
 
@@ -171,6 +172,22 @@ class BiTemporalPipeline:
         # the types have very different base rates and pooling hides it.
         # The number reported is still a measurement, never the margin
         # itself: a margin is not a probability of being correct.
+        # Most specific measured cell wins. A question naming a land-cover
+        # class is better described by that class's measured accuracy than by
+        # the question type's average: on validation, change_or_not overall
+        # reaches 84.5% while the same question about trees reaches 69.0%.
+        per_class = self._class_accuracy(question_type, target_class)
+        if per_class is not None:
+            accuracy, n, caveat = per_class
+            basis = (
+                f"measured val accuracy for {question_type} about "
+                f"{target_class} = {accuracy:.4f} (n={n}); per-type prior was "
+                f"{measured:.4f}"
+            )
+            if caveat:
+                basis += f". {caveat}"
+            return float(max(0.0, min(1.0, accuracy))), basis
+
         refined = self._calibrated_accuracy(question_type)
         if refined is not None:
             accuracy, low, high, n = refined
@@ -197,6 +214,41 @@ class BiTemporalPipeline:
                 f"not applied to the number (no calibrated basis)"
             )
         return float(max(0.0, min(1.0, measured))), basis
+
+    def _class_accuracy(self, question_type, target_class):
+        """Measured accuracy for this question type about this class.
+
+        Returns ``(accuracy, n, caveat)`` or None when unmeasured or thin.
+
+        The caveat matters more than the number. A class the model almost
+        never predicts can still score highly on "did it change?" by always
+        answering no -- playgrounds reach 94.4% that way while being predicted
+        at 0.00x their true frequency. That is accuracy achieved by absence,
+        and reporting it bare would be the system sounding most confident
+        exactly where it is blind. The measured prediction ratio travels with
+        the number so a reader, or a controller, can tell the two apart.
+        """
+        segmenter = self.segmenter
+        calibration = getattr(segmenter, "calibration", None)
+        if not calibration or not question_type or not target_class:
+            return None
+        cell = ((calibration.get("per_target_class") or {})
+                .get(question_type, {}).get(target_class))
+        if not cell or not cell.get("usable") or cell.get("accuracy") is None:
+            return None
+
+        caveat = ""
+        ratios = calibration.get("class_prediction_ratio") or {}
+        entry = ratios.get(target_class) or {}
+        ratio = entry.get("ratio")
+        if ratio is not None and ratio < 0.5:
+            caveat = (
+                f"NOTE: {target_class} is predicted at {ratio:.2f}x its true "
+                f"frequency on validation, so this accuracy is achieved "
+                f"substantially by predicting absence rather than by "
+                f"recognising the class"
+            )
+        return float(cell["accuracy"]), int(cell["n"]), caveat
 
     def _calibrated_accuracy(self, question_type):
         """Measured accuracy for this question type at this image's margin.
@@ -269,6 +321,7 @@ class BiTemporalPipeline:
         s_t1 = s_t2 = None
         detection = None
         producer_b_trace = None
+        cross_check_agreement = None
         target_class = parse_question(query)["target"] if query else None
 
         # 3 -- change extraction
@@ -289,6 +342,48 @@ class BiTemporalPipeline:
                     f"changed fraction {float(mask.mean()):.4f}; "
                     f"classes at t1 {sorted(np.unique(s_t1).tolist())}"
                 )
+
+            # 3b -- the second opinion. The trained segmenter is a 3-band RGB
+            # model trained on SECOND; its accuracy on other sensors is not
+            # measured, and its softmax margin stays high on input it has
+            # never seen, so the margin alone cannot flag out-of-distribution
+            # imagery. Producer B reaches the same class maps from physics
+            # instead of training, so where they disagree strongly the input
+            # is likely outside what the model was trained on. This is
+            # reported, never used to overrule: the deterministic producer is
+            # an approximation, not a referee.
+            if available_indices(t1):
+                with trace.stage(
+                    "cross_check",
+                    "tools.change_analysis.index_classifier.classify_pair",
+                    "Compare the trained model against a physics-based "
+                    "producer, so input outside the training distribution is "
+                    "visible rather than silently answered.",
+                    {"indices": available_indices(t1)},
+                ) as st:
+                    from .index_classifier import classify_pair
+
+                    other = classify_pair(t1, t2)
+                    producer_b_trace = other.trace
+                    if other.semantic_available:
+                        b1, _ = other.require_semantic()
+                        b_mask = b1 != 0
+                        union = float((mask | b_mask).sum())
+                        overlap = (
+                            float((mask & b_mask).sum()) / union if union else 1.0
+                        )
+                        cross_check_agreement = overlap
+                        st.observation = (
+                            f"change-mask agreement with the index producer: "
+                            f"{overlap:.3f} (Jaccard). Model changed fraction "
+                            f"{float(mask.mean()):.4f}, index producer "
+                            f"{float(b_mask.mean()):.4f}"
+                        )
+                    else:
+                        st.observation = (
+                            "index producer could not supply class maps; no "
+                            "cross-check available"
+                        )
         else:
             with trace.stage(
                 "index_detection", "tools.change_analysis.detector.detect_change",
@@ -447,11 +542,20 @@ class BiTemporalPipeline:
                 "A change claim should come with a picture a human can check.",
                 {"overlay_dir": config.overlay_dir},
             ) as st:
-                overlay_paths = self._write_overlays(t1, t2, mask, regions, scene_id)
-                st.observation = f"{len(overlay_paths)} image(s) written"
+                overlay_paths = self._write_overlays(
+                    t1, t2, mask, regions, scene_id,
+                    s_t1=s_t1, s_t2=s_t2, target_class=target_class,
+                )
+                st.observation = (
+                    f"{len(overlay_paths)} image(s) written"
+                    + (f"; focus scoped to {target_class}" if target_class
+                       and "focus_comparison" in overlay_paths else "")
+                )
 
         # 8 -- confidence
-        confidence, basis = self._confidence(question_type, validation, route)
+        confidence, basis = self._confidence(
+            question_type, validation, route, target_class
+        )
         with trace.stage(
             "confidence", "pipeline._confidence",
             "Report a confidence only where a measured basis exists; "
@@ -482,8 +586,14 @@ class BiTemporalPipeline:
             "confidence_basis": basis,
             "region_summary": summary_stats,
             "overlays": overlay_paths,
+            "overlay_legend": (
+                __import__(
+                    "tools.change_analysis.overlay", fromlist=["focus_legend"]
+                ).focus_legend(s_t1, s_t2) if s_t1 is not None else {}
+            ),
             "segmenter": self.segmenter.metadata() if route == "semantic" else None,
             "index_classifier": producer_b_trace,
+            "cross_check_agreement": cross_check_agreement,
         }
         return result
 
@@ -501,12 +611,28 @@ class BiTemporalPipeline:
             return None
         return CLASS_NAMES.get(int(values[int(np.argmax(counts))]))
 
-    def _write_overlays(self, t1, t2, mask, regions, scene_id) -> Dict[str, str]:
-        from .overlay import before_after_crops, overlay_mask, save_png
+    def _write_overlays(self, t1, t2, mask, regions, scene_id,
+                        s_t1=None, s_t2=None, target_class=None) -> Dict[str, str]:
+        from .overlay import (
+            before_after_crops, focus_comparison, overlay_mask, save_png,
+        )
 
         os.makedirs(self.config.overlay_dir, exist_ok=True)
         stem = scene_id or "scene"
         paths: Dict[str, str] = {}
+        # Side-by-side, scoped to what was actually asked. Built from the
+        # same class maps the rule counted, so the picture cannot disagree
+        # with the answer.
+        if s_t1 is not None and s_t2 is not None:
+            try:
+                paths["focus_comparison"] = save_png(
+                    os.path.join(self.config.overlay_dir, f"{stem}_focus.png"),
+                    focus_comparison(t1, t2, s_t1, s_t2, target_class=target_class),
+                )
+            except ValueError:
+                # An unknown class name must not cost the caller every other
+                # piece of evidence.
+                pass
         paths["mask_overlay"] = save_png(
             os.path.join(self.config.overlay_dir, f"{stem}_overlay.png"),
             overlay_mask(t2, mask, outline_only=False),

@@ -39,7 +39,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 
 from eval.run_cdvqa import QUESTION_TYPES, load_cdvqa_split
-from tools.change_analysis.cdvqa import answer_question, decode_label, scene_stats
+from tools.change_analysis.cdvqa import (
+    CLASS_NAMES, answer_question, decode_label, parse_question, scene_stats,
+)
 
 # A bin is usable when its accuracy is measured tightly enough to beat the
 # spread between question types it would replace. The per-type accuracies
@@ -81,25 +83,39 @@ def main(argv=None) -> int:
     scenes = sorted(by_scene)
     print(f"scoring {len(samples)} questions over {len(scenes)} scenes", flush=True)
 
-    records = []  # (margin, question_type, correct)
+    records = []  # (margin, question_type, correct, target class)
+    predicted_pixels = {c: 0 for c in CLASS_NAMES}
+    truth_pixels = {c: 0 for c in CLASS_NAMES}
     for position, scene in enumerate(scenes):
         t1 = _load(os.path.join(args.second_root, "im1", scene))
         t2 = _load(os.path.join(args.second_root, "im2", scene))
         s_t1, s_t2 = segmenter.predict(t1, t2)
         margin = segmenter.last_margin
+        # Predicted vs true class frequency. A class the model almost never
+        # predicts can still score well on "did it change?" by always saying
+        # no. That is accuracy achieved by absence, and the confidence basis
+        # has to say so rather than present it as competence.
+        truth = decode_label(os.path.join(args.second_root, "label1", scene))
+        for class_index in CLASS_NAMES:
+            predicted_pixels[class_index] += int((s_t1 == class_index).sum())
+            truth_pixels[class_index] += int((truth == class_index).sum())
         stats = scene_stats(s_t1, s_t2)
         for sample in by_scene[scene]:
             outcome = answer_question(
                 sample.question, sample.question_type, s_t1, s_t2, stats=stats
             )
-            records.append((margin, sample.question_type,
-                            int(outcome.answer == sample.answer)))
+            records.append((
+                margin, sample.question_type,
+                int(outcome.answer == sample.answer),
+                parse_question(sample.question)["target"],
+            ))
         if (position + 1) % 50 == 0:
             print(f"  {position + 1}/{len(scenes)} scenes", flush=True)
 
     margins = np.array([r[0] for r in records], dtype=np.float64)
     correct = np.array([r[2] for r in records], dtype=np.int64)
     types = [r[1] for r in records]
+    targets = [r[3] for r in records]
 
     # Quantile edges: equal-population bins, so no cut is chosen by hand.
     edges = np.quantile(margins, np.linspace(0, 1, args.bins + 1))
@@ -154,6 +170,45 @@ def main(argv=None) -> int:
                 "usable": n >= MIN_BIN_QUESTIONS,
             })
         report["per_type_bins"][question_type] = entries
+
+    # Per target land-cover class. The model under-predicts rare classes, so
+    # a water question inheriting change_or_not's overall accuracy would be
+    # confidently wrong about precisely the branch's weakest area. Measuring
+    # per class lets the reported number say so.
+    cells = defaultdict(lambda: [0, 0])
+    for (_, question_type, hit, target) in records:
+        if target is None:
+            continue
+        entry = cells[(question_type, target)]
+        entry[0] += hit
+        entry[1] += 1
+    report["per_target_class"] = {}
+    print()
+    print(f"{'question type':<22}{'class':<18}{'n':>7}{'accuracy':>11}{'usable':>8}")
+    for (question_type, target), (hits, n) in sorted(cells.items()):
+        usable = n >= MIN_BIN_QUESTIONS
+        report["per_target_class"].setdefault(question_type, {})[target] = {
+            "n": n, "accuracy": hits / n if n else None,
+            "standard_error": _standard_error(hits, n), "usable": usable,
+        }
+        if usable:
+            print(f"{question_type:<22}{target:<18}{n:>7}{hits / n * 100:>10.2f}%"
+                  f"{str(usable):>8}")
+
+    total_predicted = sum(predicted_pixels.values()) or 1
+    total_truth = sum(truth_pixels.values()) or 1
+    report["class_prediction_ratio"] = {}
+    print()
+    print(f"{'class':<18}{'predicted':>11}{'truth':>9}{'ratio':>8}")
+    for class_index, name in CLASS_NAMES.items():
+        p_share = predicted_pixels[class_index] / total_predicted
+        t_share = truth_pixels[class_index] / total_truth
+        ratio = (p_share / t_share) if t_share else None
+        report["class_prediction_ratio"][name] = {
+            "predicted_share": p_share, "true_share": t_share, "ratio": ratio,
+        }
+        print(f"{name:<18}{p_share * 100:10.2f}%{t_share * 100:8.2f}%"
+              f"{(ratio if ratio is not None else 0):7.2f}x")
 
     spread = [b["accuracy"] for b in report["bins"] if b["usable"]]
     if len(spread) >= 2:
