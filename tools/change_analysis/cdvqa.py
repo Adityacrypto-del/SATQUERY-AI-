@@ -333,3 +333,58 @@ def answer_question(
         return _result(ratio_bin(percent), area=area, percent=percent)
 
     return _result(None, reason=f"unsupported_question_type:{question_type}")
+
+
+# --------------------------------------------------------------------------
+# Question routing
+# --------------------------------------------------------------------------
+
+# Ordered most-specific first: "what has X changed to" must not be caught by
+# the generic "changed" test that answers change_or_not.
+_TYPE_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+    ("change_to_what", re.compile(r"changed?\s+(in)?to|turn(ed)?\s+into|become")),
+    ("increase_or_not", re.compile(r"increase|grow|expand|rise|more of")),
+    ("decrease_or_not", re.compile(r"decrease|shrink|reduce|decline|less of")),
+    ("largest_change", re.compile(r"largest|biggest|greatest|most change")),
+    ("smallest_change", re.compile(r"smallest|least|tiniest|minimum change")),
+    ("change_ratio_types", re.compile(r"(ratio|percentage|proportion|how much|what fraction)")),
+    ("change_or_not", re.compile(r"chang|differ|alter|modif")),
+]
+
+
+def classify_question(text: str) -> Optional[str]:
+    """Map free text onto one of the eight CDVQA question types, or None.
+
+    None means "not a CDVQA-shaped question", and the caller must fall back
+    to the region-attribute summary. It must never be turned into a guessed
+    type -- answering a question the user did not ask, with a class label
+    invented to fill the slot, is the failure HARD RULE 3 exists to prevent.
+
+    The ratio family splits on whether a land-cover class is named: asking
+    for the change percentage *of buildings* is change_ratio_types, asking
+    for the scene's change percentage is change_ratio.
+
+    Every rule except the scene-level ratio and largest/smallest needs a
+    named class to operate on, so a question without one falls through to
+    None. That is what separates "Have the areas of water changed?"
+    (change_or_not) from "What changed and where?" (open-ended description):
+    the second names no class, so no rule can answer it and inventing one
+    would answer a question nobody asked.
+    """
+    lowered = str(text).strip().lower()
+    if not lowered:
+        return None
+    parsed = parse_question(text)
+    for question_type, pattern in _TYPE_PATTERNS:
+        if pattern.search(lowered):
+            if question_type == "change_ratio_types" and parsed["target"] is None:
+                return "change_ratio"
+            if question_type in (
+                "change_to_what", "increase_or_not", "decrease_or_not",
+                "change_ratio_types", "change_or_not",
+            ) and parsed["target"] is None:
+                # These rules need a class to operate on; without one the
+                # question is not answerable by that rule.
+                continue
+            return question_type
+    return None
