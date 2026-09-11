@@ -1,0 +1,4 @@
+/* App-level overrides */
+* {
+  box-sizing: border-box;
+}
