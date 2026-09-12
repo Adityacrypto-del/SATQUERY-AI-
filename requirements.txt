@@ -22,3 +22,9 @@ sentencepiece
 scipy
 pytest
 qwen-vl-utils
+
+# Backend API server (app/backend_server.py)
+fastapi
+uvicorn
+python-multipart
+pyyaml

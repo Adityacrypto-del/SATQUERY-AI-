@@ -1,37 +1,45 @@
-"""FastAPI backend server for SatQuery AI frontend application.
+"""FastAPI backend for the SatQuery AI frontend (Branch 1: single-image VQA / captioning).
 
-Provides REST API endpoints for single-image satellite query analysis, model status,
-and sample preset datasets.
+Contract with the React app (it proxies /api -> localhost:8000):
+    GET  /api/status          backend + checkpoint state, honestly reported
+    GET  /api/presets         demo scene metadata (descriptive only, no analysis numbers)
+    POST /api/analyze         image + query -> SingleImageEvidence as JSON
+    POST /api/analyze-preset  501: preset imagery is remote, so there is nothing local to analyse
+
+This layer holds NO analysis logic. It writes the upload to a temp file, calls
+``satquery.integration.service.analyze``, and returns that dict unchanged.
+
+It never invents a result. An earlier version answered with hardcoded text ("approximately 48
+distinct industrial buildings"), a 0.942 confidence, invented land-use percentages and a fake CRS
+whenever the model was missing or raised. A demo built on that shows judges fabricated analysis, so
+it is gone: if the model cannot run, this returns 503 with the reason.
 """
 from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
-# Import existing satquery API
 try:
-    from satquery.single_image_api import analyze_single_image
-except ImportError:
-    analyze_single_image = None
+    from satquery.integration.service import analyze, get_adapter
+except ImportError:  # the pipeline is not importable in this environment
+    analyze = None
+    get_adapter = None
 
 app = FastAPI(
     title="SatQuery AI Backend",
-    description="Remote Sensing Vision-Language & VQA API Server",
-    version="1.0.0",
+    description="Remote-sensing single-image VQA / captioning API (Branch 1)",
+    version="1.1.0",
 )
 
-# Enable CORS for local dev (Vite running on 5173 / localhost)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,7 +48,10 @@ app.add_middleware(
 TEMP_DIR = Path(__file__).parent.parent / "outputs" / "temp_uploads"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Preset satellite sample database
+ACCEPTED = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+
+# Demo scenes for the UI. Descriptive metadata only: no land-use percentages and no analysis
+# numbers, because nothing here has been analysed. Analysis comes from /api/analyze on a real upload.
 PRESETS = [
     {
         "id": "preset_urban_01",
@@ -53,9 +64,8 @@ PRESETS = [
         "suggested_queries": [
             "Count shipping containers and cargo vessels.",
             "Describe the overall land cover and industrial density.",
-            "Identify transportation networks and docks."
+            "Identify transportation networks and docks.",
         ],
-        "default_land_use": {"Urban / Built-up": 55, "Water Bodies": 30, "Industrial": 12, "Vegetation": 3}
     },
     {
         "id": "preset_agri_02",
@@ -66,11 +76,10 @@ PRESETS = [
         "location": "Kansas, United States",
         "image_url": "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80",
         "suggested_queries": [
-            "What crop health or irrigation patterns are visible?",
+            "What is the NDVI of this area?",
             "Estimate percentage of active agricultural land.",
-            "Describe this satellite scene in detail."
+            "Describe this satellite scene in detail.",
         ],
-        "default_land_use": {"Agricultural Cropland": 72, "Bare Soil": 18, "Vegetation": 8, "Water": 2}
     },
     {
         "id": "preset_coastal_03",
@@ -81,84 +90,91 @@ PRESETS = [
         "location": "Cairns, Australia",
         "image_url": "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1200&q=80",
         "suggested_queries": [
-            "Are there coastal erosion or coral bleaching risks?",
-            "Calculate marine vs terrestrial land coverage.",
-            "Describe the water clarity and coastal shoreline."
+            "Describe the water clarity and coastal shoreline.",
+            "What is the NDWI of this scene?",
+            "Are there visible vessels near the shore?",
         ],
-        "default_land_use": {"Water / Marine": 68, "Coastal Forest": 22, "Sand / Beach": 10}
-    }
+    },
 ]
 
 
 @app.get("/api/status")
 def get_status() -> Dict[str, Any]:
-    """Return backend status and model state."""
-    return {
+    """Report what is actually loadable, including when nothing is."""
+    base: Dict[str, Any] = {
         "status": "online",
-        "branch": "ayushFRONTEND",
-        "model_name": "Qwen2-VL-7B-Instruct (4-bit LoRA ready)",
-        "device": "MPS / CUDA / CPU",
+        "branch": "peek/branch1-baseline",
+        "supported_formats": sorted(ext.lstrip(".").upper() for ext in ACCEPTED),
+        "timestamp": time.time(),
+        # Branch 1 has no adapter checkpoint of its own yet; the VLM is a third-party model.
         "adapted": False,
-        "supported_formats": ["PNG", "JPEG", "TIFF", "GeoTIFF"],
-        "max_resolution": "Variable (Dynamic Patching)",
-        "timestamp": time.time()
+        "measured_results": "outputs/reference_eval/eval_log.md",
+    }
+    if get_adapter is None:
+        return {**base, "status": "degraded", "backend_available": False,
+                "model_name": "unavailable", "pipeline_importable": False,
+                "reason": "satquery.integration is not importable in this environment"}
+
+    adapter = get_adapter()
+    available = adapter.is_available
+    return {
+        **base,
+        "pipeline_importable": True,
+        "backend_available": available,
+        "model_name": adapter.backend.name,
+        "tasks": adapter.describe()["tasks"],
+        "reason": None if available else adapter.unavailable_reason,
     }
 
 
 @app.get("/api/presets")
 def get_presets() -> Dict[str, Any]:
-    """Return preset demo satellite datasets."""
+    """Demo scene metadata. Descriptive only: no analysis has been run on these."""
     return {"presets": PRESETS}
 
 
-def _mock_analysis_fallback(filename: str, query: str) -> Dict[str, Any]:
-    """Rich fallback analyzer for rapid preview or when model weights are loading."""
-    query_lower = query.lower()
-    is_caption = any(k in query_lower for k in ["describe", "caption", "summary", "overview", "what is this"])
-    
-    if "building" in query_lower or "count" in query_lower or "structure" in query_lower:
-        answer = "Analysis detects approximately 48 distinct industrial buildings and 12 dock structures along the waterfront perimeter."
-        land_use = {"Built-up Structures": 42, "Paved/Roads": 28, "Water": 20, "Greenery": 10}
-    elif "water" in query_lower or "flood" in query_lower or "coastal" in query_lower:
-        answer = "High water body prominence detected (approx. 38% cover). Shorelines appear stable with low immediate flood inundation risk."
-        land_use = {"Water Bodies": 38, "Vegetation": 32, "Bare Soil": 20, "Urban": 10}
-    elif "agri" in query_lower or "crop" in query_lower or "farm" in query_lower:
-        answer = "Prominent agricultural pivot circles with high NIR/NDVI reflectance values indicating active photosynthesis and healthy crop growth."
-        land_use = {"Healthy Crops": 64, "Fallow Fields": 22, "Irrigation Ponds": 8, "Roads": 6}
-    elif is_caption:
-        answer = f"High-resolution multispectral satellite scene capturing mixed land surface cover. Features distinct spatial boundaries, structured road networks, and natural vegetation zones."
-        land_use = {"Vegetation": 45, "Urban/Built-up": 30, "Water": 15, "Bare Land": 10}
-    else:
-        answer = f"Visual Question Answering analysis for '{query}': Target features identified with 94.2% spatial confidence across 3 spectral bands (RGB)."
-        land_use = {"Vegetation": 40, "Urban": 35, "Water": 15, "Other": 10}
+@app.post("/api/analyze")
+async def analyze_endpoint(
+    image: UploadFile = File(...),
+    query: str = Form(...),
+    lora_path: str = Form(""),  # accepted for frontend compatibility; unused, no adapter exists yet
+) -> Dict[str, Any]:
+    """Upload a satellite image (.png/.jpg/.tif/.tiff) with a query and get real evidence back."""
+    if analyze is None:
+        raise HTTPException(
+            status_code=503,
+            detail="analysis pipeline unavailable: satquery.integration is not importable",
+        )
+    if not image or not image.filename:
+        raise HTTPException(status_code=400, detail="no image file provided")
 
-    return {
-        "task": "captioning" if is_caption else "vqa",
-        "query": query,
-        "answer": answer,
-        "confidence": 0.942,
-        "adapted": False,
-        "model": "Qwen2-VL-7B-Instruct",
-        "land_use": land_use,
-        "preprocessing": {
-            "bands_used": ["Band 1 (Red)", "Band 2 (Green)", "Band 3 (Blue)"],
-            "resampled_size": [1024, 1024],
-            "normalization": "0-1 MinMax Scaled"
-        },
-        "source_metadata": {
-            "filename": filename,
-            "crs": "EPSG:4326 (WGS 84)",
-            "bounds": [-122.4194, 37.7749, -122.4094, 37.7849],
-            "pixel_scale": [0.5, 0.5]
-        },
-        "execution_trace": [
-            "input_validation_ok",
-            "preprocess_bands:RGB",
-            f"query_classified:{'captioning' if is_caption else 'vqa'}:deterministic_rule",
-            "model_selected:Qwen2-VL-7B-Instruct:adapted=False",
-            f"{'captioning' if is_caption else 'vqa'}_inference_complete"
-        ]
-    }
+    suffix = Path(image.filename).suffix.lower() or ".png"
+    if suffix not in ACCEPTED:
+        raise HTTPException(status_code=400,
+                            detail=f"unsupported format {suffix!r}; accepted: {sorted(ACCEPTED)}")
+
+    temp_file = TEMP_DIR / f"upload_{int(time.time() * 1000)}{suffix}"
+    with open(temp_file, "wb") as buffer:
+        shutil.copyfileobj(image.file, buffer)
+
+    try:
+        result = analyze(str(temp_file), query)
+    except Exception as exc:  # a bug or a missing backend: say so, do not invent an answer
+        raise HTTPException(
+            status_code=503,
+            detail=f"analysis failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    finally:
+        if temp_file.exists():
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
+
+    # The upload path is temporary and already deleted; do not leak it to the client.
+    result.get("source_metadata", {}).pop("path", None)
+    result["query"] = query
+    return result
 
 
 @app.post("/api/analyze-preset")
@@ -167,54 +183,19 @@ async def analyze_preset_endpoint(
     preset_title: str = Form(""),
     lora_path: str = Form(""),
 ) -> Dict[str, Any]:
-    """Analyze a preset satellite scene without uploading an image."""
-    return _mock_analysis_fallback(preset_title or "preset_satellite_scene", query)
+    """Not implemented: preset images are remote URLs, so there is no local raster to analyse.
 
-
-@app.post("/api/analyze")
-async def analyze_endpoint(
-    image: UploadFile = File(...),
-    query: str = Form(...),
-    lora_path: str = Form(""),
-) -> Dict[str, Any]:
-    """Upload a satellite image (.png, .jpg, .tif, .geotiff) and submit a query."""
-    if not image or not image.filename:
-        raise HTTPException(status_code=400, detail="No image file provided")
-
-    suffix = Path(image.filename).suffix
-    if not suffix:
-        suffix = ".png"
-        
-    temp_file = TEMP_DIR / f"upload_{int(time.time()*1000)}{suffix}"
-    
-    with open(temp_file, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
-
-    try:
-        if analyze_single_image is not None:
-            try:
-                res = analyze_single_image(str(temp_file), query, lora_path=lora_path)
-                # Enhance result with land_use chart fallback if missing
-                if "land_use" not in res:
-                    res["land_use"] = {"Vegetation": 45, "Urban": 35, "Water": 12, "Bare Soil": 8}
-                if "confidence" not in res:
-                    res["confidence"] = 0.95
-                return res
-            except Exception as e:
-                # If weights not present or hardware error, return rich intelligent fallback
-                fallback = _mock_analysis_fallback(image.filename, query)
-                fallback["execution_trace"].append(f"notice_used_fallback:{str(e)[:60]}")
-                return fallback
-        else:
-            return _mock_analysis_fallback(image.filename, query)
-    finally:
-        if temp_file.exists():
-            try:
-                os.remove(temp_file)
-            except Exception:
-                pass
+    This used to return canned text as if a model had produced it. Upload the image instead, which
+    goes through /api/analyze and is really analysed.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=("preset analysis is not implemented: preset imagery is a remote URL, not a local "
+                "raster. Download the scene and upload it to /api/analyze for a real result."),
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
